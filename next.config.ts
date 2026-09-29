@@ -1,7 +1,11 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Constrain build parallelism. This project is developed on 4GB machines where
+  // Next's default multi-worker compile exhausts the heap.
+  experimental: {
+    cpus: 1,
+  },
 };
 
 export default nextConfig;

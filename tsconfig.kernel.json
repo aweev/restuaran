@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "./dist",
+    "rootDir": "./",
+    "incremental": false,
+    "tsBuildInfoFile": "./dist/.tsbuildinfo.kernel"
+  },
+  "include": ["kernel/**/*.ts", "kernel/**/*.tsx", "lib/db.ts"],
+  "exclude": ["node_modules", "kernel/react/**"]
+}
