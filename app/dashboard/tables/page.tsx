@@ -2,14 +2,18 @@
 
 import { useEffect, useState } from "react"
 import { useTable } from "@/context/TableContext"
+import { useAuth } from "@/context/AuthContext"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { TableGrid } from "@/components/tables/table-grid"
 import { Loader2, Plus } from "lucide-react"
 
 export default function TablesPage() {
-  const { state, fetchTables } = useTable()
+  const { state, myTables, fetchTables } = useTable()
+  const { state: authState } = useAuth()
   const [loading, setLoading] = useState(true)
+  const [scope, setScope] = useState<"mine" | "all">("all")
+  const visibleTables = scope === "mine" && authState.user?.id ? myTables : state.tables
 
   useEffect(() => {
     const loadData = async () => {
@@ -34,18 +38,28 @@ export default function TablesPage() {
   }
 
   // Count tables by status
-  const availableTables = state.tables.filter((table) => table.status === "available").length
-  const occupiedTables = state.tables.filter((table) => table.status === "occupied").length
-  const reservedTables = state.tables.filter((table) => table.status === "reserved").length
-  const dirtyTables = state.tables.filter((table) => table.status === "dirty").length
+  const availableTables = visibleTables.filter((table) => table.status === "available").length
+  const occupiedTables = visibleTables.filter((table) => table.status === "occupied").length
+  const reservedTables = visibleTables.filter((table) => table.status === "reserved").length
+  const dirtyTables = visibleTables.filter((table) => table.status === "dirty").length
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <h2 className="text-3xl font-bold tracking-tight">Tables</h2>
-        <Button>
-          <Plus className="mr-2 h-4 w-4" /> Add Table
-        </Button>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-lg border p-0.5" role="group" aria-label="Table scope">
+            <Button variant={scope === "mine" ? "default" : "ghost"} size="sm" onClick={() => setScope("mine")}>
+              My tables
+            </Button>
+            <Button variant={scope === "all" ? "default" : "ghost"} size="sm" onClick={() => setScope("all")}>
+              All
+            </Button>
+          </div>
+          <Button>
+            <Plus className="mr-2 h-4 w-4" /> Add Table
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -89,10 +103,10 @@ export default function TablesPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Table Layout</CardTitle>
+          <CardTitle>Table Layout{scope === "mine" ? " — My section" : ""}</CardTitle>
         </CardHeader>
         <CardContent>
-          <TableGrid tables={state.tables} />
+          <TableGrid tables={visibleTables} />
         </CardContent>
       </Card>
     </div>

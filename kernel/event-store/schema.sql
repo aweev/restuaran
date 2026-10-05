@@ -45,6 +45,14 @@ CREATE TABLE IF NOT EXISTS ros_projections_state (
   PRIMARY KEY (projection_name, org_id, venue_id)
 );
 
+-- Cross-instance command idempotency: request_id → result envelope.
+-- Reads/writes are advisory (the bus degrades to in-memory on failure).
+CREATE TABLE IF NOT EXISTS kernel_idempotency (
+  request_id TEXT PRIMARY KEY,
+  result     JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Phase 3 compaction: cold tier for events at/below an aggregate's snapshot
 -- version. Rows keep their original global_position/event_id, and all reads
 -- (query/readAggregate) UNION hot + cold so replay, projections and audit stay

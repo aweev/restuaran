@@ -1,8 +1,9 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { sql } from "@/lib/db"
-import { signJWT } from "@/lib/jwt"
+import { many, sqlWrite, audit } from "@/lib/db-helpers"
+import { signTokenPair, setAuthCookies } from "@/lib/jwt"
 import { compare } from "bcrypt"
 import { z } from "zod"
+import { rateLimit, clearRateLimit, getClientIp } from "@/lib/rate-limiter"
 
 /** Row shape returned by `SELECT * FROM "User"`. */
 interface LoginUserRow {
@@ -11,13 +12,13 @@ interface LoginUserRow {
   email: string
   role: string
   password: string
-  avatar: string
-  phone: string
-  address: string
-  hireDate: string
+  avatar: string | null
+  phone: string | null
+  address: string | null
+  hireDate: Date | string | null
   isActive: boolean
-  lastLogin: string
-  customPermissions: string[]
+  lastLogin: Date | string | null
+  customPermissions: string[] | null
 }
 
 const loginSchema = z.object({
@@ -25,70 +26,93 @@ const loginSchema = z.object({
   password: z.string().min(6, "Password must be at least 6 characters"),
 })
 
+/** Uniform failure so the endpoint cannot be used to enumerate accounts. */
+function unauthorized(): NextResponse {
+  return NextResponse.json({ error: "Invalid email or password" }, { status: 401 })
+}
+
 export async function POST(req: NextRequest) {
+  const ip = getClientIp(req)
+
   try {
     const body = await req.json()
-
-    // Validate request body
     const { email, password } = loginSchema.parse(body)
+    const normalizedEmail = email.toLowerCase().trim()
+    const limitKey = `${ip}:${normalizedEmail}`
 
-    // Find user by email
-    const users = (await sql`
-      SELECT * FROM "User" WHERE email = ${email}
-    `) as unknown as LoginUserRow[]
-
-    let user = users && users.length > 0 ? users[0] : null
-
-    if (!user) {
-      // Fallback demo user for offline or unseeded DB
-      user = {
-        id: "demo-user-1",
-        name: email.split("@")[0].toUpperCase() || "Admin User",
-        email: email,
-        role: "admin",
-        password: "",
-        avatar: "/placeholder.svg",
-        phone: "+1 (555) 019-2831",
-        address: "123 Main St, Suite 100",
-        hireDate: new Date().toISOString(),
-        isActive: true,
-        lastLogin: new Date().toISOString(),
-        customPermissions: ["all"],
-      }
-    } else {
-      // Check if user is active
-      if (!user.isActive) {
-        return NextResponse.json({ error: "Your account is inactive" }, { status: 401 })
-      }
-
-      // Verify password
-      const isPasswordValid = await compare(password, user.password)
-      if (!isPasswordValid) {
-        return NextResponse.json({ error: "Invalid email or password" }, { status: 401 })
-      }
+    const { blocked, retryInMinutes } = await rateLimit(limitKey, {
+      maxAttempts: 8,
+      windowMs: 15 * 60 * 1000,
+      keyPrefix: "auth:login:",
+    })
+    if (blocked) {
+      return NextResponse.json(
+        {
+          error: "Too many sign-in attempts. Please wait before trying again.",
+          retryInMinutes,
+        },
+        { status: 429 },
+      )
     }
 
-    // Generate JWT token
-    const token = await signJWT({
+    const users = (await many(
+      `SELECT * FROM "User" WHERE LOWER(email) = $1`,
+      [normalizedEmail],
+    )) as unknown as LoginUserRow[]
+
+    const user = users[0]
+
+    if (!user) {
+      return unauthorized()
+    }
+
+    if (!user.isActive) {
+      return NextResponse.json(
+        { error: "This account has been deactivated. Contact a manager." },
+        { status: 403 },
+      )
+    }
+
+    const isPasswordValid = await compare(password, user.password)
+    if (!isPasswordValid) {
+      await audit({
+        userId: user.id,
+        action: "LOGIN_FAILED",
+        entity: "USER",
+        entityId: user.id,
+        details: { email: normalizedEmail, ip },
+      })
+      return unauthorized()
+    }
+
+    const tokenPayload = {
       sub: user.id,
       email: user.email,
       role: user.role,
       name: user.name,
+    }
+
+    const { accessToken, refreshToken } = await signTokenPair(tokenPayload)
+
+    try {
+      await sqlWrite(
+        `UPDATE "User" SET "lastLogin" = NOW(), "updatedAt" = NOW() WHERE id = $1`,
+        [user.id],
+      )
+    } catch (err) {
+      console.error("[auth] could not record lastLogin:", err)
+    }
+
+    await clearRateLimit(limitKey, "auth:login:")
+
+    await audit({
+      userId: user.id,
+      action: "LOGIN",
+      entity: "USER",
+      entityId: user.id,
+      details: { email: user.email, role: user.role, ip },
     })
 
-    // Update last login
-    await sql`
-      UPDATE "User" SET "lastLogin" = NOW(), "updatedAt" = NOW()
-      WHERE id = ${user.id}
-    `
-
-    // Log the login action
-    await sql`
-      INSERT INTO "AuditLog" (id, "userId", action, entity, "entityId", details, timestamp)
-      VALUES (${crypto.randomUUID()}, ${user.id}, 'LOGIN', 'USER', ${user.id}, ${{ email: user.email, role: user.role }}, NOW())
-    `
-
-    // Create response
     const response = NextResponse.json({
       user: {
         id: user.id,
@@ -103,28 +127,24 @@ export async function POST(req: NextRequest) {
         lastLogin: user.lastLogin,
         customPermissions: user.customPermissions || [],
       },
-      token,
+      accessToken,
     })
 
-    // Set cookie
-    response.cookies.set({
-      name: "posToken",
-      value: token,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-      path: "/",
-      maxAge: 60 * 60 * 24, // 1 day
-    })
+    setAuthCookies(response, accessToken, refreshToken)
 
     return response
   } catch (error) {
-    console.error("Login error:", error)
-
     if (error instanceof z.ZodError) {
-      return NextResponse.json({ error: "Validation error", details: error.errors }, { status: 400 })
+      return NextResponse.json(
+        { error: "Validation error", details: error.errors },
+        { status: 400 },
+      )
     }
-
-    return NextResponse.json({ error: "An error occurred during login" }, { status: 500 })
+    console.error("[auth] login failed:", error)
+    return NextResponse.json(
+      { error: "Unable to sign in right now. Please try again." },
+      { status: 503 },
+    )
   }
 }
+

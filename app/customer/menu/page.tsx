@@ -31,6 +31,7 @@ export default function CustomerMenuPage() {
   const { state: menuState, fetchMenuItems } = useMenu()
   const [selectedCategory, setSelectedCategory] = useState<MenuCategory>("all")
   const [searchQuery, setSearchQuery] = useState("")
+  const [dietary, setDietary] = useState<"all" | "veg" | "nonveg">("all")
   const [filteredItems, setFilteredItems] = useState<MenuItem[]>([])
   const [cartCount, setCartCount] = useState(0)
 
@@ -66,9 +67,19 @@ export default function CustomerMenuPage() {
         )
       }
 
+      // Filter by dietary preference (uses MenuItem.type Veg/NonVeg)
+      if (dietary !== "all") {
+        items = items.filter((item) =>
+          dietary === "veg" ? item.type === "Veg" : item.type !== "Veg",
+        )
+      }
+
+      // Hide unsellable items (86'd / unavailable) — kernel policy is source of truth
+      items = items.filter((item) => (item as { available?: boolean }).available !== false)
+
       setFilteredItems(items)
     }
-  }, [menuState.items, selectedCategory, searchQuery])
+  }, [menuState.items, selectedCategory, searchQuery, dietary])
 
   const handleCartUpdate = (count: number) => {
     setCartCount(count)
@@ -132,6 +143,14 @@ export default function CustomerMenuPage() {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
+          </div>
+
+          <div className="flex gap-2" role="group" aria-label="Dietary preference">
+            {(["all", "veg", "nonveg"] as const).map((d) => (
+              <Button key={d} variant={dietary === d ? "default" : "outline"} size="sm" onClick={() => setDietary(d)} className="min-h-[40px]">
+                {d === "all" ? "All" : d === "veg" ? "Veg" : "Non-veg"}
+              </Button>
+            ))}
           </div>
 
           <Tabs

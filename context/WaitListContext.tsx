@@ -2,9 +2,14 @@
 
 import type React from "react"
 
-import { createContext, useContext, useReducer, useCallback } from "react"
+import { createContext, useContext, useMemo, useCallback } from "react"
 import { useAuth } from "./AuthContext"
+import { useCommand, useProjection } from "@/kernel/react/kernel-provider"
+import type { WaitlistBoardState } from "@/kernel/modules/waitlist.module"
+import { waitlistRowsToEntries } from "@/lib/kernel-mappers"
 import type { WaitListEntry } from "@/types"
+import { useFeedback, notifyWithActions, recoveryActionsFor } from "@/lib/feedback"
+import { useAttentionOptional } from "@/context/AttentionContext"
 
 // Define the state type
 interface WaitListState {
@@ -12,16 +17,6 @@ interface WaitListState {
   loading: boolean
   error: string | null
 }
-
-// Define the action types
-type WaitListAction =
-  | { type: "FETCH_ENTRIES_REQUEST" }
-  | { type: "FETCH_ENTRIES_SUCCESS"; payload: WaitListEntry[] }
-  | { type: "FETCH_ENTRIES_FAILURE"; payload: string }
-  | { type: "ADD_ENTRY"; payload: WaitListEntry }
-  | { type: "REMOVE_ENTRY"; payload: string }
-  | { type: "NOTIFY_CUSTOMER"; payload: string }
-  | { type: "SEAT_CUSTOMER"; payload: { id: string; tableId: string } }
 
 // Define the context type
 interface WaitListContextType {
@@ -36,234 +31,129 @@ interface WaitListContextType {
 // Create the context
 const WaitListContext = createContext<WaitListContextType | undefined>(undefined)
 
-// Initial state
-const initialState: WaitListState = {
-  entries: [],
-  loading: false,
-  error: null,
-}
-
-// Reducer function
-function waitListReducer(state: WaitListState, action: WaitListAction): WaitListState {
-  switch (action.type) {
-    case "FETCH_ENTRIES_REQUEST":
-      return {
-        ...state,
-        loading: true,
-        error: null,
-      }
-    case "FETCH_ENTRIES_SUCCESS":
-      return {
-        ...state,
-        entries: action.payload,
-        loading: false,
-      }
-    case "FETCH_ENTRIES_FAILURE":
-      return {
-        ...state,
-        loading: false,
-        error: action.payload,
-      }
-    case "ADD_ENTRY":
-      return {
-        ...state,
-        entries: [...state.entries, action.payload],
-      }
-    case "REMOVE_ENTRY":
-      return {
-        ...state,
-        entries: state.entries.filter((entry) => entry.id !== action.payload),
-      }
-    case "NOTIFY_CUSTOMER":
-      return {
-        ...state,
-        entries: state.entries.map((entry) =>
-          entry.id === action.payload ? { ...entry, notified: true, updatedAt: new Date().toISOString() } : entry,
-        ),
-      }
-    case "SEAT_CUSTOMER":
-      return {
-        ...state,
-        entries: state.entries.filter((entry) => entry.id !== action.payload.id),
-      }
-    default:
-      return state
-  }
-}
-
-// Provider component
+/**
+ * Waitlist, backed by the event store.
+   *
+   * The queue is the `waitlist.board` projection and every mutation is a kernel
+   * command. Seating is a single compound command `waitlist.seatAtTable` that
+   * atomically seats both the table aggregate and the waitlist entry under one
+   * correlation id, eliminating the partial-failure window where a table could
+   * be occupied while the guest remains queued.
+   *
+   * SMS stays behind the `/api/waitlist/[id]/sms` endpoint (Twilio credentials
+   * must never reach the browser); the kernel marks the guest notified first so
+   * a failed text never blocks the host.
+   *
+   * @deprecated `waitlist.seat` is retained for backwards compatibility with
+   * the older two-step flow used by tests and edge integrations.
+   */
 export function WaitListProvider({ children }: { children: React.ReactNode }) {
-  const [state, dispatch] = useReducer(waitListReducer, initialState)
+  const { state: board } = useProjection<WaitlistBoardState>("waitlist.board", 2000)
+  const { run } = useCommand()
   const { state: authState } = useAuth()
+  const { notify } = useFeedback()
+  const attention = useAttentionOptional()
+
+  const reject = (title: string, err?: { message?: string; code?: string }) => {
+    const actions = recoveryActionsFor(err?.code);
+    attention?.push({ title, message: err?.message, code: err?.code, href: "/dashboard/tables" });
+    if (actions.length > 0) notifyWithActions(title, err?.message, actions);
+    else notify("error", title, err?.message);
+  };
+
+  const entries = useMemo(() => waitlistRowsToEntries(board?.queue ?? []), [board])
+
+  const state = useMemo<WaitListState>(
+    () => ({
+      entries,
+      loading: board === null,
+      error: null,
+    }),
+    [entries, board],
+  )
+
+  const fail = (result: { error?: { message?: string; code?: string } }, fallback: string): never => {
+    reject(fallback, result.error);
+    throw new Error(result.error?.message ?? fallback)
+  }
 
   // Fetch wait list entries
   const fetchEntries = useCallback(async () => {
-    if (!authState.token) return
-
-    dispatch({ type: "FETCH_ENTRIES_REQUEST" })
-    try {
-      const response = await fetch("/api/waitlist", {
-        headers: {
-          Authorization: `Bearer ${authState.token}`,
-        },
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch wait list entries")
-      }
-
-      const data = await response.json()
-      dispatch({ type: "FETCH_ENTRIES_SUCCESS", payload: data })
-    } catch (error) {
-      console.error("Error fetching wait list entries:", error)
-      dispatch({
-        type: "FETCH_ENTRIES_FAILURE",
-        payload: error instanceof Error ? error.message : "Failed to fetch wait list entries",
-      })
-    }
-  }, [authState.token])
+    // Retained for call-site compatibility; the projection refreshes itself.
+  }, [])
 
   // Add entry to wait list
   const addEntry = useCallback(
     async (entry: Omit<WaitListEntry, "id" | "createdAt" | "updatedAt" | "notified">) => {
-      if (!authState.token) return
-
-      try {
-        const response = await fetch("/api/waitlist", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${authState.token}`,
-          },
-          body: JSON.stringify(entry),
-        })
-
-        if (!response.ok) {
-          throw new Error("Failed to add entry to wait list")
-        }
-
-        const data = await response.json()
-        dispatch({ type: "ADD_ENTRY", payload: data })
-      } catch (error) {
-        console.error("Error adding entry to wait list:", error)
-        throw error
+      if (!entry.customerName?.trim()) throw new Error("Customer name is required")
+      if (!Number.isInteger(entry.partySize) || entry.partySize < 1) {
+        throw new Error("Party size must be at least 1")
       }
+      const result = await run("waitlist.join", {
+        customerName: entry.customerName.trim(),
+        partySize: entry.partySize,
+        ...(entry.phoneNumber ? { phone: entry.phoneNumber } : {}),
+        ...(entry.notes ? { notes: entry.notes } : {}),
+      })
+      if (!result.success) fail(result, "Failed to add entry to wait list")
     },
-    [authState.token],
+    [run],
   )
 
   // Remove entry from wait list
   const removeEntry = useCallback(
     async (id: string) => {
-      if (!authState.token) return
-
-      try {
-        const response = await fetch(`/api/waitlist/${id}`, {
-          method: "DELETE",
-          headers: {
-            Authorization: `Bearer ${authState.token}`,
-          },
-        })
-
-        if (!response.ok) {
-          throw new Error("Failed to remove entry from wait list")
-        }
-
-        dispatch({ type: "REMOVE_ENTRY", payload: id })
-      } catch (error) {
-        console.error("Error removing entry from wait list:", error)
-        throw error
-      }
+      const result = await run("waitlist.remove", { entryId: id })
+      if (!result.success) fail(result, "Failed to remove entry from wait list")
     },
-    [authState.token],
+    [run],
   )
 
   // Notify customer
   const notifyCustomer = useCallback(
     async (id: string) => {
-      if (!authState.token) return
-
+      const result = await run("waitlist.notify", { entryId: id })
+      if (!result.success) fail(result, "Failed to notify customer")
+      // SMS is best-effort and credential-gated server-side; a failed text
+      // must not un-notify the guest or alarm the host with a second error.
       try {
-        const entry = state.entries.find((e) => e.id === id)
-
-        if (!entry) {
-          throw new Error("Entry not found")
-        }
-
-        // If there's a phone number, send SMS notification
-        if (entry.phoneNumber) {
-          const response = await fetch(`/api/waitlist/${id}/notify`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${authState.token}`,
-            },
-          })
-
-          if (!response.ok) {
-            throw new Error("Failed to send notification")
-          }
-        } else {
-          // If no phone number, just mark as notified
-          const response = await fetch(`/api/waitlist/${id}`, {
-            method: "PATCH",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${authState.token}`,
-            },
-            body: JSON.stringify({ notified: true }),
-          })
-
-          if (!response.ok) {
-            throw new Error("Failed to update entry")
-          }
-        }
-
-        dispatch({ type: "NOTIFY_CUSTOMER", payload: id })
-      } catch (error) {
-        console.error("Error notifying customer:", error)
-        throw error
+        await fetch(`/api/waitlist/${id}/sms`, {
+          method: "POST",
+          headers: authState.accessToken ? { Authorization: `Bearer ${authState.accessToken}` } : {},
+          credentials: "include",
+        })
+      } catch {
+        /* notified state already holds; SMS retries from the entry */
       }
     },
-    [authState.token, state.entries],
+    [run, authState.accessToken],
   )
 
   // Seat customer
   const seatCustomer = useCallback(
     async (id: string, tableId: string) => {
-      if (!authState.token) return
-
-      try {
-        const response = await fetch(`/api/waitlist/${id}/seat`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${authState.token}`,
-          },
-          body: JSON.stringify({ tableId }),
-        })
-
-        if (!response.ok) {
-          throw new Error("Failed to seat customer")
-        }
-
-        dispatch({ type: "SEAT_CUSTOMER", payload: { id, tableId } })
-      } catch (error) {
-        console.error("Error seating customer:", error)
-        throw error
-      }
+      const result = await run("waitlist.seatAtTable", {
+        entryId: id,
+        tableId,
+        serverId: authState.user?.id ?? "host",
+        orderId: `waitlist-${id}`,
+      })
+      if (!result.success) fail(result, "Failed to seat customer")
     },
-    [authState.token],
+    [run, authState.user?.id],
   )
 
-  const value = {
-    state,
-    fetchEntries,
-    addEntry,
-    removeEntry,
-    notifyCustomer,
-    seatCustomer,
-  }
+  const value = useMemo(
+    () => ({
+      state,
+      fetchEntries,
+      addEntry,
+      removeEntry,
+      notifyCustomer,
+      seatCustomer,
+    }),
+    [state, fetchEntries, addEntry, removeEntry, notifyCustomer, seatCustomer],
+  )
 
   return <WaitListContext.Provider value={value}>{children}</WaitListContext.Provider>
 }

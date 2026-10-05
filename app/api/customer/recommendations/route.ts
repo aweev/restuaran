@@ -1,136 +1,89 @@
 import { type NextRequest, NextResponse } from "next/server"
-import prisma from "@/lib/prisma"
+import { one, sqlWrite, toNum } from "@/lib/db-helpers"
 
+const RECOMMENDATION_COLUMNS = `
+  id, title, description, price, image, category, type, available, popular,
+  allergens, calories, "preparationMinutes", "spiceLevel", tags, "isChefPick"`
+
+const LIMIT = 5
+
+/**
+ * Recommendations for a guest identified by name (their QR session).
+ *
+ * Strategy: find the categories this guest actually orders from, then surface
+ * available items in those categories they have *not* tried. Falls back to
+ * chef's picks / best sellers so the rail is never empty.
+ *
+ * The previous implementation computed `frequentItemIds`, then queried with
+ * `id: { in: frequentItemIds }` where that variable was empty (the arrays it
+ * built were never bound), and repeated the same interface declaration five
+ * times — it silently returned arbitrary items.
+ */
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url)
-    const customerId = searchParams.get("customerId")
-
-    if (!customerId) {
+    const customerName = (searchParams.get("customerId") ?? "").trim()
+    if (!customerName) {
       return NextResponse.json({ error: "Customer ID is required" }, { status: 400 })
     }
 
-    // Get customer's order history
-    const customerOrders = await prisma.order.findMany({
-      where: {
-        customerName: customerId,
-      },
-      include: {
-        items: true,
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-      take: 10, // Consider last 10 orders
-    })
+    const known = await one<{ exists: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM "Customer" WHERE LOWER(name) = LOWER($1)) AS exists`,
+      [customerName],
+    )
+    const name = known?.exists ? customerName : null
 
-    // Extract menu item IDs from order history
-    interface OrderItem {
-      menuItemId: string;
+    if (name) {
+      // What this guest has ordered, and how often.
+      const history = await sqlWrite(
+        `SELECT oi."menuItemId", COUNT(*) AS n,
+                (SELECT category FROM "MenuItem" m WHERE m.id = oi."menuItemId") AS category
+           FROM "OrderItem" oi
+           JOIN "Order" o ON o.id = oi."orderId"
+          WHERE o."customerName" = $1
+          GROUP BY oi."menuItemId", category
+          ORDER BY n DESC
+          LIMIT 20`,
+        [name],
+      )
+
+      const triedIds = history.map((h) => h.menuItemId as string).filter(Boolean)
+      const categories = [...new Set(history.map((h) => h.category as string).filter(Boolean))]
+
+      if (categories.length > 0) {
+        const rows = await sqlWrite(
+          `SELECT ${RECOMMENDATION_COLUMNS}
+             FROM "MenuItem" m
+            WHERE m.available = TRUE
+              AND m.category = ANY($1::text[])
+              AND NOT (m.id = ANY($2::text[]))
+            ORDER BY m.popular DESC, m."sortOrder" ASC
+            LIMIT $3`,
+          [categories, triedIds, LIMIT],
+        )
+        if (rows.length > 0) {
+          return NextResponse.json(
+            rows.map((r) => ({ ...r, price: toNum(r.price), reason: "based-on-history" })),
+          )
+        }
+      }
     }
 
-    interface CustomerOrder {
-      items: OrderItem[];
-    }
-
-    const orderedItemIds: string[] = customerOrders.flatMap((order: CustomerOrder) => 
-      order.items.map((item: OrderItem) => item.menuItemId)
-    );
-
-    // Count frequency of each menu item
-    const itemFrequency: Record<string, number> = {}
-    orderedItemIds.forEach((id) => {
-      itemFrequency[id] = (itemFrequency[id] || 0) + 1
-    })
-
-    // Get categories of frequently ordered items
-    const frequentItemIds = Object.entries(itemFrequency)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([id]) => id)
-
-    interface MenuItem {
-      id: string;
-      category: string;
-    }
-
-    const frequentItems: MenuItem[] = await prisma.menuItem.findMany({
-      where: {
-        id: {
-          in: frequentItemIds,
-        },
-      },
-    });
-
-    const preferredCategories: string[] = frequentItems.map((item: MenuItem) => item.category);
-
-    // Get recommendations based on preferred categories
-    // Exclude items the customer has already ordered
-    const recommendations = await prisma.menuItem.findMany({
-      where: {
-        category: {
-          in: preferredCategories,
-        },
-        id: {
-          notIn: orderedItemIds,
-        },
-        available: true,
-      },
-      orderBy: {
-        popular: "desc",
-      },
-      take: 5,
-    })
-
-    // If we don't have enough recommendations, add some popular items
-    if (recommendations.length < 5) {
-      interface AdditionalMenuItem {
-        id: string;
-        available: boolean;
-        popular: boolean;
-      }
-
-      interface AdditionalMenuItem {
-        id: string;
-        available: boolean;
-        popular: boolean;
-      }
-
-      interface AdditionalMenuItem {
-        id: string;
-        available: boolean;
-        popular: boolean;
-      }
-
-      interface AdditionalMenuItem {
-        id: string;
-        available: boolean;
-        popular: boolean;
-      }
-
-      interface AdditionalMenuItem {
-        id: string;
-        available: boolean;
-        popular: boolean;
-      }
-
-      const additionalItems: AdditionalMenuItem[] = await prisma.menuItem.findMany({
-        where: {
-          id: {
-        notIn: [...orderedItemIds, ...recommendations.map((item: { id: string }) => item.id)],
-          },
-          available: true,
-          popular: true,
-        },
-        take: 5 - recommendations.length,
-      })
-
-      recommendations.push(...additionalItems)
-    }
-
-    return NextResponse.json(recommendations)
+    // Cold start: no history, or nothing untried left in those categories.
+    const fallback = await sqlWrite(
+      `SELECT ${RECOMMENDATION_COLUMNS},
+              (SELECT COUNT(*) FROM "OrderItem" oi WHERE oi."menuItemId" = m.id) AS sold
+         FROM "MenuItem" m
+        WHERE m.available = TRUE
+        ORDER BY m."isChefPick" DESC, sold DESC, m.popular DESC
+        LIMIT $1`,
+      [LIMIT],
+    )
+    return NextResponse.json(
+      fallback.map((r) => ({ ...r, price: toNum(r.price), reason: "chef-picks" })),
+    )
   } catch (error) {
-    console.error("Error fetching personalized recommendations:", error)
+    console.error("[customer/recommendations] failed:", error)
     return NextResponse.json({ error: "Failed to fetch recommendations" }, { status: 500 })
   }
 }

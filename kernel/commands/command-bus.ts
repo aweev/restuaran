@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto"
+import type { ZodType } from "zod"
 import {
   ActorContext,
   AttributeBag,
@@ -17,6 +18,14 @@ import { AggregateRepository } from "@/kernel/aggregates/repository"
 export interface CommandHandler<TPayload extends AttributeBag = AttributeBag> {
   commandType: string
   requiredPermission?: string
+  /**
+   * Opt-in payload schema, checked in `dispatch` before policies and the
+   * handler run. Keeps malformed input (negative prices, empty ids) out of
+   * aggregates with a uniform INVALID_PAYLOAD error instead of one-off guards
+   * in every handler. Validated output replaces the raw payload, so Zod
+   * defaults and coercions apply downstream.
+   */
+  schema?: ZodType<unknown>
   handle: (command: Command<TPayload>, deps: KernelDeps) => Promise<CommandResult>
 }
 
@@ -42,11 +51,61 @@ export interface CommandPolicy {
   check: (command: Command, deps: KernelDeps) => Promise<KernelError | null>
 }
 
+export interface IdempotencyStore {
+  get(requestId: string): Promise<CommandResult | null>
+  set(requestId: string, result: CommandResult): Promise<void>
+}
+
+export class InMemoryIdempotencyStore implements IdempotencyStore {
+  private seen = new Map<string, CommandResult>()
+  constructor(private max = 5000) {}
+  async get(requestId: string): Promise<CommandResult | null> {
+    return this.seen.get(requestId) ?? null
+  }
+  async set(requestId: string, result: CommandResult): Promise<void> {
+    this.seen.set(requestId, result)
+    if (this.seen.size > this.max) {
+      const first = this.seen.keys().next().value as string | undefined
+      if (first) this.seen.delete(first)
+    }
+  }
+  size(): number {
+    return this.seen.size
+  }
+}
+
+type SqlLike = {
+  unsafe: (query: string, params?: unknown[]) => Promise<Array<Record<string, unknown>>>
+}
+
+/** DB-backed idempotency: table kernel_idempotency(request_id PK, result JSON, created_at). */
+export class PostgresIdempotencyStore implements IdempotencyStore {
+  constructor(private db: SqlLike) {}
+  async get(requestId: string): Promise<CommandResult | null> {
+    const rows = await this.db.unsafe(`SELECT result FROM kernel_idempotency WHERE request_id = $1`, [requestId])
+    if (rows.length === 0) return null
+    return (rows[0].result ?? rows[0].Result ?? null) as unknown as CommandResult | null
+  }
+  async set(requestId: string, result: CommandResult): Promise<void> {
+    await this.db.unsafe(
+      `INSERT INTO kernel_idempotency (request_id, result, created_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (request_id) DO NOTHING`,
+      [requestId, JSON.stringify(result)],
+    )
+  }
+}
+
 export class CommandBus {
   private handlers = new Map<string, CommandHandler>()
   private policies: CommandPolicy[] = []
+  private idempotency: IdempotencyStore = new InMemoryIdempotencyStore()
 
   constructor(private deps: CommandBusDeps) {}
+
+  setIdempotencyStore(store: IdempotencyStore): void {
+    this.idempotency = store
+  }
 
   use(policy: CommandPolicy): () => void {
     this.policies.push(policy)
@@ -73,6 +132,15 @@ export class CommandBus {
     payload: AttributeBag,
     ctx: { tenant: TenantContext; actor: ActorContext; requestId?: Id }
   ): Promise<CommandResult> {
+    const startedAt = Date.now()
+    if (ctx.requestId) {
+      try {
+        const cached = await this.idempotency.get(ctx.requestId)
+        if (cached) return cached
+      } catch {
+        /* idempotency lookup is advisory */
+      }
+    }
     const handler = this.handlers.get(commandType)
     const commandId = randomUUID()
     if (!handler) {
@@ -86,10 +154,33 @@ export class CommandBus {
       }
     }
 
+    let validatedPayload = payload
+    if (handler.schema) {
+      const parsed = handler.schema.safeParse(payload)
+      if (!parsed.success) {
+        const rejected: CommandResult = {
+          success: false,
+          commandId,
+          error: kernelError("INVALID_PAYLOAD", `Invalid payload for "${commandType}"`, {
+            issues: parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
+          }),
+        }
+        await this.deps.hooks.emit("command:failed", {
+          command: {
+            commandId, commandType, payload, tenant: ctx.tenant,
+            actor: ctx.actor, requestId: ctx.requestId, issuedAt: new Date().toISOString(),
+          },
+          result: rejected,
+        })
+        return rejected
+      }
+      validatedPayload = parsed.data as AttributeBag
+    }
+
     const command: Command = {
       commandId,
       commandType,
-      payload,
+      payload: validatedPayload,
       tenant: ctx.tenant,
       actor: ctx.actor,
       requestId: ctx.requestId,
@@ -116,10 +207,33 @@ export class CommandBus {
     try {
       const result = await handler.handle(command, deps)
       await this.deps.hooks.emit("command:after", { command, result })
+      try {
+        const { kernelMetrics } = await import("@/kernel/observability")
+        kernelMetrics.increment(`command.${commandType}`)
+        kernelMetrics.increment(result.success ? "command.ok" : "command.failed")
+        kernelMetrics.recordLatency(`command.${commandType}`, Date.now() - startedAt)
+      } catch {
+        /* metrics are advisory */
+      }
+      if (ctx.requestId && result.success) {
+        try {
+          await this.idempotency.set(ctx.requestId, result)
+        } catch {
+          /* idempotency persist is advisory */
+        }
+      }
       return result
     } catch (err) {
       const failed: CommandResult = { success: false, commandId, error: normalizeError(err) }
       await this.deps.hooks.emit("command:failed", { command, result: failed })
+      try {
+        const { kernelMetrics } = await import("@/kernel/observability")
+        kernelMetrics.increment(`command.${commandType}`)
+        kernelMetrics.increment("command.failed")
+        kernelMetrics.recordLatency(`command.${commandType}`, Date.now() - startedAt)
+      } catch {
+        /* metrics are advisory */
+      }
       return failed
     }
   }

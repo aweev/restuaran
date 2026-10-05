@@ -21,6 +21,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { toast } from "@/components/ui/use-toast"
 import { Minus, Plus, AlertCircle } from "lucide-react"
 import type { MenuItem, CartItem, CartModifierSelection } from "@/types"
+import { getVenueSettings } from "@/lib/settings"
 
 interface CustomerMenuItemCardProps {
   item: MenuItem
@@ -178,9 +179,9 @@ export function CustomerMenuItemCard({ item, tableNumber, onCartUpdate, compact 
       // Add item to cart
       cart.items.push(cartItem)
 
-      // Recalculate totals
+      // Recalculate totals with the venue-configured tax rate (kernel-canonical).
       cart.subtotal = cart.items.reduce((sum: number, item: CartItem) => sum + item.totalPrice, 0)
-      cart.tax = cart.subtotal * 0.05 // 5% tax
+      cart.tax = cart.subtotal * getVenueSettings().taxRate
       cart.total = cart.subtotal + cart.tax
 
       // Save cart to localStorage

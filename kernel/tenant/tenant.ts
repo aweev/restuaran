@@ -15,12 +15,14 @@ export function systemActor(overrides?: Partial<ActorContext>): ActorContext {
     roles: overrides?.roles ?? ["system"],
     permissions:
       overrides?.permissions ?? [
-        "order:create", "order:edit", "order:process", "order:pay", "order:view",
+        "order:create", "order:edit", "order:edit_own", "order:process", "order:pay", "order:view", "order:comp",
         "table:create", "table:edit", "table:view",
         "inventory:create", "inventory:edit", "inventory:view",
         "reservation:view", "reservation:manage",
         "waitlist:view", "waitlist:manage",
         "menu:view", "menu:manage",
+        "venue:view", "venue:manage",
+        "customer:view", "customer:manage", "customer:view_pii", "feedback:submit",
         "staff:view", "staff:schedule", "staff:clock",
         "integration:view", "integration:manage",
         "audit:view",

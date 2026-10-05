@@ -4,6 +4,7 @@ import { useMemo } from "react"
 import type { Reservation } from "@/types/reservation"
 import type { Table } from "@/types"
 import { format, addMinutes, isBefore, isAfter, setHours, setMinutes } from "date-fns"
+import { reservationSlotToDate } from "@/lib/kernel-mappers"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
@@ -41,7 +42,7 @@ export function ReservationCalendar({ reservations, tables, date }: ReservationC
       const slotEnd = addMinutes(slot.time, 30)
 
       const slotReservations = reservations.filter((reservation) => {
-        const reservationTime = new Date(reservation.time)
+        const reservationTime = reservationSlotToDate(reservation.date, reservation.time)
         return isAfter(reservationTime, slotStart) && isBefore(reservationTime, slotEnd)
       })
 

@@ -1,303 +1,173 @@
 "use client"
 
-import { createContext, useReducer, useContext, useEffect, useCallback, type ReactNode } from "react"
+import { createContext, useContext, useMemo, useState, type ReactNode } from "react"
 import type { MenuState, MenuItem, MenuCategory } from "@/types/index"
-import { useAuth } from "./AuthContext"
+import { useCommand, useProjection } from "@/kernel/react/kernel-provider"
+import type { MenuBoardState } from "@/kernel/modules/menu.module"
+import { menuRowsToMenuItems } from "@/lib/kernel-mappers"
+import { useFeedback, notifyWithActions, recoveryActionsFor } from "@/lib/feedback"
+import { useAttentionOptional } from "@/context/AttentionContext"
 
-// Initial state
-const initialState: MenuState = {
-  categories: [
-    { id: "all", label: "All", items: 0 },
-    { id: "breakfast", label: "Breakfast", items: 0 },
-    { id: "soups", label: "Soups", items: 0 },
-    { id: "pasta", label: "Pasta", items: 0 },
-    { id: "main", label: "Main Course", items: 0 },
-    { id: "burgers", label: "Burgers", items: 0 },
-    { id: "desserts", label: "Desserts", items: 0 },
-    { id: "drinks", label: "Drinks", items: 0 },
-    { id: "sides", label: "Sides", items: 0 },
-  ],
-  items: [],
-  loading: false,
-  error: null,
-  selectedCategory: "all",
-}
-
-// Action types
-type MenuAction =
-  | { type: "FETCH_MENU_START" }
-  | { type: "FETCH_MENU_SUCCESS"; payload: MenuItem[] }
-  | { type: "FETCH_MENU_FAILURE"; payload: string }
-  | { type: "SET_SELECTED_CATEGORY"; payload: MenuCategory }
-  | { type: "UPDATE_ITEM_AVAILABILITY"; payload: { itemId: string; available: boolean } }
-  | { type: "UPDATE_ITEM"; payload: MenuItem }
-  | { type: "ADD_ITEM"; payload: MenuItem }
-  | { type: "DELETE_ITEM"; payload: string }
-
-// Reducer
-const menuReducer = (state: MenuState, action: MenuAction): MenuState => {
-  switch (action.type) {
-    case "FETCH_MENU_START":
-      return {
-        ...state,
-        loading: true,
-        error: null,
-      }
-    case "FETCH_MENU_SUCCESS": {
-      const items = Array.isArray(action.payload) ? action.payload : []
-      // Recalculate category counts
-      const categories = state.categories.map((category) => ({
-        ...category,
-        items: category.id === "all" ? items.length : items.filter((item) => item && item.category === category.id).length,
-      }))
-
-      return {
-        ...state,
-        items,
-        categories,
-        loading: false,
-      }
-    }
-    case "FETCH_MENU_FAILURE":
-      return {
-        ...state,
-        loading: false,
-        error: action.payload,
-      }
-    case "SET_SELECTED_CATEGORY":
-      return {
-        ...state,
-        selectedCategory: action.payload,
-      }
-    case "UPDATE_ITEM_AVAILABILITY":
-      return {
-        ...state,
-        items: state.items.map((item) =>
-          item.id === action.payload.itemId ? { ...item, available: action.payload.available } : item,
-        ),
-      }
-    case "UPDATE_ITEM":
-      return {
-        ...state,
-        items: state.items.map((item) => (item.id === action.payload.id ? action.payload : item)),
-      }
-    case "ADD_ITEM":
-      return {
-        ...state,
-        items: [...state.items, action.payload],
-        categories: state.categories.map((category) => ({
-          ...category,
-          items:
-            category.id === "all"
-              ? state.items.length + 1
-              : category.id === action.payload.category
-                ? category.items + 1
-                : category.items,
-        })),
-      }
-    case "DELETE_ITEM":
-      const deletedItem = state.items.find((item) => item.id === action.payload)
-      return {
-        ...state,
-        items: state.items.filter((item) => item.id !== action.payload),
-        categories: state.categories.map((category) => ({
-          ...category,
-          items:
-            category.id === "all"
-              ? state.items.length - 1
-              : deletedItem && category.id === deletedItem.category
-                ? category.items - 1
-                : category.items,
-        })),
-      }
-    default:
-      return state
-  }
-}
-
-// Create context
 interface MenuContextType {
   state: MenuState
+  items: MenuItem[]
+  loading: boolean
+  error: string | null
+  selectedCategory: MenuCategory
   fetchMenu: () => Promise<void>
-  /** Alias of {@link MenuContextType.fetchMenu}, kept for callers using the longer name. */
   fetchMenuItems: () => Promise<void>
   setSelectedCategory: (category: MenuCategory) => void
   updateItemAvailability: (itemId: string, available: boolean) => Promise<void>
   updateItem: (item: MenuItem) => Promise<void>
   addItem: (item: MenuItem) => Promise<void>
   deleteItem: (itemId: string) => Promise<void>
+  setRecipe: (itemId: string, recipe: Array<{ inventoryItemId: string; qty: number }>) => Promise<void>
 }
 
 const MenuContext = createContext<MenuContextType | undefined>(undefined)
 
-// Provider component
+/**
+ * Menu, backed entirely by the event store.
+ *
+ * Reads come from the `menu.board` projection (sellability source of truth:
+ * price, 86'd, availability). Writes go through kernel commands
+ * (`menu.createItem`, `menu.changePrice`, `menu.setAvailability`,
+ * `menu.eightySix`/`clearEightySix`, `menu.updateItem`), so the cross-module
+ * 86'd policy applies.
+ *
+ * The public interface is unchanged, so every consumer keeps working.
+ */
 export const MenuProvider = ({ children }: { children: ReactNode }) => {
-  const [state, dispatch] = useReducer(menuReducer, initialState)
-  const { state: authState } = useAuth()
+  const { state: board } = useProjection<MenuBoardState>("menu.board", 3000)
+  const { run } = useCommand()
+  const { notify } = useFeedback()
+  const attention = useAttentionOptional()
+  const [selectedCategory, setSelectedCategory] = useState<MenuCategory>("all")
 
-  // Actions
-  // NOTE: these must stay referentially stable. Consumers list them in useEffect
-  // dependency arrays (e.g. app/dashboard/page.tsx), so an unmemoized function
-  // here re-triggers their effects on every render -> infinite loop.
-  const fetchMenu = useCallback(async () => {
-    dispatch({ type: "FETCH_MENU_START" })
-    try {
-      const response = await fetch("/api/menu")
+  const reject = (title: string, err?: { message?: string; code?: string }) => {
+    const actions = recoveryActionsFor(err?.code);
+    attention?.push({ title, message: err?.message, code: err?.code, href: "/dashboard/menu" });
+    if (actions.length > 0) notifyWithActions(title, err?.message, actions);
+    else notify("error", title, err?.message);
+  };
 
-      if (!response.ok) {
-        throw new Error("Failed to fetch menu items")
-      }
+  const kernelItems = useMemo(() => menuRowsToMenuItems(board?.items ?? []), [board])
 
-      const data = await response.json()
+  const state = useMemo(() => ({
+    items: kernelItems,
+    loading: board === null,
+    error: null,
+    selectedCategory,
+    categories: useMemo(() => {
+      const items = kernelItems
+      return [
+        { id: "all", label: "All", items: items.length },
+        { id: "breakfast", label: "Breakfast", items: items.filter((i) => i.category === "breakfast").length },
+        { id: "soups", label: "Soups", items: items.filter((i) => i.category === "soups").length },
+        { id: "pasta", label: "Pasta", items: items.filter((i) => i.category === "pasta").length },
+        { id: "main", label: "Main Course", items: items.filter((i) => i.category === "main").length },
+        { id: "burgers", label: "Burgers", items: items.filter((i) => i.category === "burgers").length },
+        { id: "desserts", label: "Desserts", items: items.filter((i) => i.category === "desserts").length },
+        { id: "drinks", label: "Drinks", items: items.filter((i) => i.category === "drinks").length },
+        { id: "sides", label: "Sides", items: items.filter((i) => i.category === "sides").length },
+      ] as MenuState["categories"]
+    }, [kernelItems]),
+  }), [kernelItems, board, selectedCategory])
 
-      if (!Array.isArray(data)) {
-        throw new Error("Received non-array data for menu items")
-      }
-
-      dispatch({
-        type: "FETCH_MENU_SUCCESS",
-        payload: data,
-      })
-    } catch (error) {
-      dispatch({
-        type: "FETCH_MENU_FAILURE",
-        payload: error instanceof Error ? error.message : "Failed to fetch menu items",
-      })
-    }
-  }, [])
-
-  // Fetch menu items when component mounts. Declared after `fetchMenu` so the
-  // reference is initialized before the effect closes over it.
-  useEffect(() => {
-    fetchMenu()
-  }, [fetchMenu])
-
-  const setSelectedCategory = useCallback((category: MenuCategory) => {
-    dispatch({ type: "SET_SELECTED_CATEGORY", payload: category })
-  }, [])
-
-  const updateItemAvailability = async (itemId: string, available: boolean) => {
-    try {
-      const response = await fetch(`/api/menu/${itemId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify({ available }),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to update item availability")
-      }
-
-      dispatch({
-        type: "UPDATE_ITEM_AVAILABILITY",
-        payload: { itemId, available },
-      })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to update item availability")
-    }
+  const fetchMenu = async () => {
+    // No-op: projection refreshes automatically
   }
 
-  const updateItem = async (item: MenuItem) => {
-    try {
-      const response = await fetch(`/api/menu/${item.id}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify(item),
-      })
+  const api = useMemo<MenuContextType>(
+    () => ({
+      state,
+      items: state.items,
+      loading: state.loading,
+      error: state.error,
+      selectedCategory: state.selectedCategory,
+      categories: state.categories,
+      fetchMenu,
+      fetchMenuItems: fetchMenu,
+      setSelectedCategory,
 
-      if (!response.ok) {
-        throw new Error("Failed to update menu item")
-      }
+      updateItemAvailability: async (itemId: string, available: boolean) => {
+        try {
+          const commandType = available ? "menu.clearEightySix" : "menu.eightySix"
+          const result = await run(commandType, available ? { itemId } : { itemId, reason: "86'd from POS" })
+          if (!result.success) { reject("Menu update failed", result.error); throw new Error(result.error?.message ?? "Menu update rejected"); }
+          notify("success", available ? "Item back on sale" : "Item 86'd")
+          return Promise.resolve()
+        } catch (error) {
+          return Promise.reject(error instanceof Error ? error.message : "Failed to update item availability")
+        }
+      },
 
-      const updatedItem = await response.json()
+      updateItem: async (item: MenuItem) => {
+        try {
+          const priceResult = await run("menu.changePrice", { itemId: item.id, price: item.price })
+          if (!priceResult.success) { reject("Menu update failed", priceResult.error); throw new Error(priceResult.error?.message ?? "Price update rejected"); }
+          const availResult = await run("menu.setAvailability", { itemId: item.id, available: item.available })
+          if (!availResult.success) { reject("Menu update failed", availResult.error); throw new Error(availResult.error?.message ?? "Availability update rejected"); }
+          const presResult = await run("menu.updateItem", {
+            itemId: item.id,
+            description: item.description,
+            image: item.image,
+            prepMinutes: item.preparationTime,
+          })
+          if (!presResult.success) { reject("Menu update failed", presResult.error); throw new Error(presResult.error?.message ?? "Menu update rejected"); }
+          notify("success", "Menu item updated")
+          return Promise.resolve()
+        } catch (error) {
+          return Promise.reject(error instanceof Error ? error.message : "Failed to update menu item")
+        }
+      },
 
-      dispatch({
-        type: "UPDATE_ITEM",
-        payload: updatedItem,
-      })
+      addItem: async (item: MenuItem) => {
+        try {
+          const result = await run("menu.createItem", {
+            itemId: item.id,
+            name: item.title,
+            categoryId: item.category,
+            basePrice: item.price,
+            description: item.description,
+            image: item.image,
+            prepMinutes: item.preparationTime,
+            allergens: item.allergens,
+          })
+          if (!result.success) { reject("Could not add item", result.error); throw new Error(result.error?.message ?? "Menu create rejected"); }
+          notify("success", "Menu item added")
+          return Promise.resolve()
+        } catch (error) {
+          return Promise.reject(error instanceof Error ? error.message : "Failed to add menu item")
+        }
+      },
 
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to update menu item")
-    }
-  }
+      deleteItem: async (itemId: string) => {
+        try {
+          const result = await run("menu.eightySix", { itemId, reason: "removed from sale" })
+          if (!result.success) { reject("Could not remove item", result.error); throw new Error(result.error?.message ?? "Menu update rejected"); }
+          notify("success", "Item removed from sale")
+          return Promise.resolve()
+        } catch (error) {
+          return Promise.reject(error instanceof Error ? error.message : "Failed to delete menu item")
+        }
+      },
 
-  const addItem = async (item: MenuItem) => {
-    try {
-      const response = await fetch("/api/menu", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify(item),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to add menu item")
-      }
-
-      const newItem = await response.json()
-
-      dispatch({
-        type: "ADD_ITEM",
-        payload: newItem,
-      })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to add menu item")
-    }
-  }
-
-  const deleteItem = async (itemId: string) => {
-    try {
-      const response = await fetch(`/api/menu/${itemId}`, {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${authState.token}`,
-        },
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to delete menu item")
-      }
-
-      dispatch({
-        type: "DELETE_ITEM",
-        payload: itemId,
-      })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to delete menu item")
-    }
-  }
-
-  return (
-    <MenuContext.Provider
-      value={{
-        state,
-        fetchMenu,
-        fetchMenuItems: fetchMenu,
-        setSelectedCategory,
-        updateItemAvailability,
-        updateItem,
-        addItem,
-        deleteItem,
-      }}
-    >
-      {children}
-    </MenuContext.Provider>
+      setRecipe: async (itemId: string, recipe: Array<{ inventoryItemId: string; qty: number }>) => {
+        try {
+          const result = await run("menu.setRecipe", { itemId, recipe })
+          if (!result.success) { reject("Could not save recipe", result.error); throw new Error(result.error?.message ?? "Recipe update rejected"); }
+          notify("success", recipe.length === 0 ? "Recipe cleared" : "Recipe saved", "Stock depletes automatically when fired.");
+          return Promise.resolve()
+        } catch (error) {
+          return Promise.reject(error instanceof Error ? error.message : "Failed to save recipe")
+        }
+      },
+    }),
+    [state, run, notify],
   )
+
+  return <MenuContext.Provider value={api}>{children}</MenuContext.Provider>
 }
 
 // Custom hook

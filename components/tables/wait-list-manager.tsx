@@ -4,7 +4,6 @@ import type React from "react"
 
 import { useState } from "react"
 import { useWaitList } from "@/context/WaitListContext"
-import { useTable } from "@/context/TableContext"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -23,7 +22,6 @@ interface WaitListManagerProps {
 
 export function WaitListManager({ tables }: WaitListManagerProps) {
   const { state, addEntry, removeEntry, notifyCustomer, seatCustomer } = useWaitList()
-  const { occupyTable } = useTable()
   const [newEntry, setNewEntry] = useState({
     customerName: "",
     phoneNumber: "",
@@ -82,7 +80,7 @@ export function WaitListManager({ tables }: WaitListManagerProps) {
       console.error("Error adding to wait list:", error)
       toast({
         title: "Error",
-        description: "Failed to add customer to wait list.",
+        description: error instanceof Error ? error.message : "Failed to add customer to wait list.",
         variant: "destructive",
       })
     }
@@ -99,7 +97,7 @@ export function WaitListManager({ tables }: WaitListManagerProps) {
       console.error("Error removing from wait list:", error)
       toast({
         title: "Error",
-        description: "Failed to remove customer from wait list.",
+        description: error instanceof Error ? error.message : "Failed to remove customer from wait list.",
         variant: "destructive",
       })
     }
@@ -119,7 +117,7 @@ export function WaitListManager({ tables }: WaitListManagerProps) {
       console.error("Error notifying customer:", error)
       toast({
         title: "Error",
-        description: "Failed to notify customer.",
+        description: error instanceof Error ? error.message : "Failed to notify customer.",
         variant: "destructive",
       })
     }
@@ -129,15 +127,8 @@ export function WaitListManager({ tables }: WaitListManagerProps) {
     if (!selectedEntry || !selectedTable) return
 
     try {
-      // First occupy the table
-      await occupyTable(
-        selectedTable,
-        selectedEntry.customerName,
-        selectedEntry.partySize,
-        "Server", // This should be the current user's name in a real implementation
-      )
-
-      // Then remove from wait list
+      // seatCustomer owns the whole flow: table.seat first (refuses an
+      // occupied table), then waitlist.seat dequeues the guest.
       await seatCustomer(selectedEntry.id, selectedTable)
 
       setIsSeatDialogOpen(false)
@@ -153,7 +144,7 @@ export function WaitListManager({ tables }: WaitListManagerProps) {
       console.error("Error seating customer:", error)
       toast({
         title: "Error",
-        description: "Failed to seat customer.",
+        description: error instanceof Error ? error.message : "Failed to seat customer.",
         variant: "destructive",
       })
     }

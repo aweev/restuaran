@@ -1,29 +1,25 @@
-import { type NextRequest, NextResponse } from "next/server"
-import prisma from "@/lib/prisma"
-import { withAuth } from "@/middleware/auth-middleware"
+import { NextResponse } from "next/server"
+import { withAuth, type RouteContext } from "@/middleware/auth-middleware"
+import { one, sqlWrite } from "@/lib/db-helpers"
 
-// DELETE - Remove a staff assignment
-export const DELETE = withAuth(async (req: NextRequest) => {
-  const { params: { userId } } = req as unknown as { params: { userId: string } };
+type Ctx = RouteContext<{ userId: string }>
+
+/** Params come from the context — `req.params` does not exist on a NextRequest. */
+export const DELETE = withAuth(async (_req, { params }: Ctx) => {
   try {
+    const { userId } = await params
 
-    // Check if assignment exists
-    const existingAssignment = await prisma.kitchenStaffAssignment.findUnique({
-      where: { userId },
-    })
-
-    if (!existingAssignment) {
+    const existing = await one(`SELECT "userId" FROM "KitchenStaffAssignment" WHERE "userId" = $1`, [userId])
+    if (!existing) {
       return NextResponse.json({ error: "Staff assignment not found" }, { status: 404 })
     }
 
-    // Delete the assignment
-    await prisma.kitchenStaffAssignment.delete({
-      where: { userId },
-    })
+    await sqlWrite(`DELETE FROM "KitchenStaffAssignment" WHERE "userId" = $1`, [userId])
 
     return NextResponse.json({ success: true })
   } catch (error) {
-    console.error("Error deleting staff assignment:", error)
+    console.error("[kitchen] staff assignment delete failed:", error)
     return NextResponse.json({ error: "Failed to delete staff assignment" }, { status: 500 })
   }
 })
+

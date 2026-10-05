@@ -1,143 +1,31 @@
-"use client"
+"use client";
 
-import { createContext, useReducer, useContext, useEffect, useCallback, type ReactNode } from "react"
-import type { TableState, Table, TableStatus } from "@/types"
-import { useAuth } from "./AuthContext"
+import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import type { Table, TableState, TableStatus } from "@/types";
+import { useCommand, useProjection } from "@/kernel/react/kernel-provider";
+import type { TableBoardState } from "@/kernel/projections/builtins";
+import { tableRowsToTables } from "@/lib/kernel-mappers";
+import { useFeedback, notifyWithActions, recoveryActionsFor, suggestedToRecovery, type SuggestedAction } from "@/lib/feedback";
+import { useAttentionOptional } from "@/context/AttentionContext";
+import { useAuth } from "@/context/AuthContext";
 
-// Initial state
-const initialState: TableState = {
-  tables: [],
-  loading: false,
-  error: null,
-  selectedTable: null,
-}
+/**
+ * Tables, backed by the event store.
+ *
+ * This previously fetched `/api/tables` and PATCHed it, which meant the floor
+ * plan, the reservation board and the waitlist could each disagree the moment
+ * two staff touched the same table. The list is now the `tables.board`
+ * projection and every action is a command, so the kernel's guards
+ * (double-seating, seating onto a reserved table) apply to the UI as well.
+ *
+ * The public interface is unchanged, so every consumer keeps working.
+ */
 
-// Action types
-type TableAction =
-  | { type: "FETCH_TABLES_START" }
-  | { type: "FETCH_TABLES_SUCCESS"; payload: Table[] }
-  | { type: "FETCH_TABLES_FAILURE"; payload: string }
-  | { type: "SELECT_TABLE"; payload: Table | null }
-  | { type: "UPDATE_TABLE_STATUS"; payload: { tableId: string; status: TableStatus } }
-  | {
-      type: "OCCUPY_TABLE"
-      payload: { tableId: string; customerName: string; customerCount: number; serverName: string }
-    }
-  | {
-      type: "RESERVE_TABLE"
-      payload: { tableId: string; customerName: string; customerCount: number; startTime: string }
-    }
-  | { type: "CLEAR_TABLE"; payload: string }
-  | { type: "UPDATE_TABLE_POSITION"; payload: { tableId: string; position: { x: number; y: number } } }
-  | { type: "ADD_TABLE"; payload: Table }
-  | { type: "REMOVE_TABLE"; payload: string }
-
-// Reducer
-const tableReducer = (state: TableState, action: TableAction): TableState => {
-  switch (action.type) {
-    case "FETCH_TABLES_START":
-      return {
-        ...state,
-        loading: true,
-        error: null,
-      }
-    case "FETCH_TABLES_SUCCESS":
-      return {
-        ...state,
-        tables: Array.isArray(action.payload) ? action.payload : [],
-        loading: false,
-      }
-    case "FETCH_TABLES_FAILURE":
-      return {
-        ...state,
-        loading: false,
-        error: action.payload,
-      }
-    case "SELECT_TABLE":
-      return {
-        ...state,
-        selectedTable: action.payload,
-      }
-    case "UPDATE_TABLE_STATUS":
-      return {
-        ...state,
-        tables: state.tables.map((table) =>
-          table.id === action.payload.tableId ? { ...table, status: action.payload.status } : table,
-        ),
-      }
-    case "OCCUPY_TABLE":
-      return {
-        ...state,
-        tables: state.tables.map((table) =>
-          table.id === action.payload.tableId
-            ? {
-                ...table,
-                status: "occupied",
-                customerName: action.payload.customerName,
-                customerCount: action.payload.customerCount,
-                serverName: action.payload.serverName,
-                startTime: new Date().toISOString(),
-              }
-            : table,
-        ),
-      }
-    case "RESERVE_TABLE":
-      return {
-        ...state,
-        tables: state.tables.map((table) =>
-          table.id === action.payload.tableId
-            ? {
-                ...table,
-                status: "reserved",
-                customerName: action.payload.customerName,
-                customerCount: action.payload.customerCount,
-                startTime: action.payload.startTime,
-              }
-            : table,
-        ),
-      }
-    case "CLEAR_TABLE":
-      return {
-        ...state,
-        tables: state.tables.map((table) =>
-          table.id === action.payload
-            ? {
-                ...table,
-                status: "dirty",
-                customerName: undefined,
-                customerCount: undefined,
-                serverName: undefined,
-                startTime: undefined,
-                orderId: undefined,
-              }
-            : table,
-        ),
-      }
-    case "UPDATE_TABLE_POSITION":
-      return {
-        ...state,
-        tables: state.tables.map((table) =>
-          table.id === action.payload.tableId ? { ...table, position: action.payload.position } : table,
-        ),
-      }
-    case "ADD_TABLE":
-      return {
-        ...state,
-        tables: [...state.tables, action.payload],
-      }
-    case "REMOVE_TABLE":
-      return {
-        ...state,
-        tables: state.tables.filter((table) => table.id !== action.payload),
-      }
-    default:
-      return state
-  }
-}
-
-// Create context
 interface TableContextType {
   state: TableState
+  myTables: Table[]
+  assignedSection: string | null
+  setAssignedSection: (s: string | null) => void
   fetchTables: () => Promise<void>
   selectTable: (table: Table | null) => void
   updateTableStatus: (tableId: string, status: TableStatus) => Promise<void>
@@ -151,280 +39,174 @@ interface TableContextType {
 
 const TableContext = createContext<TableContextType | undefined>(undefined)
 
-// Provider component
 export const TableProvider = ({ children }: { children: ReactNode }) => {
-  const [state, dispatch] = useReducer(tableReducer, initialState)
+  const { state: board } = useProjection<TableBoardState>("tables.board", 1500)
+  const { run } = useCommand()
+  const { notify } = useFeedback()
+  const attention = useAttentionOptional()
   const { state: authState } = useAuth()
+  const [selected, setSelected] = useState<Table | null>(null)
+  const [assignedSection, setAssignedSection] = useState<string | null>(null)
 
+  const tables = useMemo(() => tableRowsToTables(board?.rows ?? []), [board])
+  const serverByTable = useMemo(() => {
+    const m: Record<string, string | null> = {};
+    for (const r of board?.rows ?? []) m[r.tableId] = r.serverId ?? null;
+    return m;
+  }, [board])
+  const zoneByTable = useMemo(() => {
+    const m: Record<string, string | null> = {};
+    for (const r of board?.rows ?? []) m[r.tableId] = (r.zone ?? r.floor ?? null) as string | null;
+    return m;
+  }, [board])
 
-  // Actions
-  const fetchTables = useCallback(async () => {
-    dispatch({ type: "FETCH_TABLES_START" })
-    try {
-      const response = await fetch("/api/tables", {
-        headers: {
-          Authorization: `Bearer ${authState.token}`,
-        },
-      })
+  const myTables = useMemo(() => {
+    const uid = authState.user?.id;
+    let list = uid ? tables.filter((t) => serverByTable[t.id] === uid) : [];
+    if (assignedSection) list = list.filter((t) => (zoneByTable[t.id] ?? "main") === assignedSection);
+    return list;
+  }, [tables, serverByTable, zoneByTable, authState.user?.id, assignedSection])
 
-      if (!response.ok) {
-        throw new Error("Failed to fetch tables")
-      }
-
-      const data = await response.json()
-
-      // Transform data to match our Table type
-      const tables = data.map((table: { positionX: number; positionY: number } & Record<string, unknown>) => ({
-        ...table,
-        position: { x: table.positionX, y: table.positionY },
-      }))
-
-      dispatch({
-        type: "FETCH_TABLES_SUCCESS",
-        payload: tables,
-      })
-    } catch (error) {
-      dispatch({
-        type: "FETCH_TABLES_FAILURE",
-        payload: error instanceof Error ? error.message : "Failed to fetch tables",
-      })
-    }
-  }, [authState.token])
-
-  // Fetch tables when component mounts
-  useEffect(() => {
-    if (authState.isAuthenticated) {
-      fetchTables()
-    }
-  }, [authState.isAuthenticated, fetchTables])
-
-  const selectTable = (table: Table | null) => {
-    dispatch({ type: "SELECT_TABLE", payload: table })
-  }
-
-  const updateTableStatus = async (tableId: string, status: TableStatus) => {
-    try {
-      const response = await fetch(`/api/tables/${tableId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify({ status }),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to update table status")
-      }
-
-      dispatch({
-        type: "UPDATE_TABLE_STATUS",
-        payload: { tableId, status },
-      })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to update table status")
-    }
-  }
-
-  const occupyTable = async (tableId: string, customerName: string, customerCount: number, serverName: string) => {
-    try {
-      const response = await fetch(`/api/tables/${tableId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify({
-          status: "occupied",
-          customerName,
-          customerCount,
-          serverName,
-          startTime: new Date().toISOString(),
-        }),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to occupy table")
-      }
-
-      dispatch({
-        type: "OCCUPY_TABLE",
-        payload: { tableId, customerName, customerCount, serverName },
-      })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to occupy table")
-    }
-  }
-
-  const reserveTable = async (tableId: string, customerName: string, customerCount: number, startTime: string) => {
-    try {
-      const response = await fetch(`/api/tables/${tableId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify({
-          status: "reserved",
-          customerName,
-          customerCount,
-          startTime,
-        }),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to reserve table")
-      }
-
-      dispatch({
-        type: "RESERVE_TABLE",
-        payload: { tableId, customerName, customerCount, startTime },
-      })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to reserve table")
-    }
-  }
-
-  const clearTable = async (tableId: string) => {
-    try {
-      const response = await fetch(`/api/tables/${tableId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify({
-          status: "dirty",
-          customerName: null,
-          customerCount: null,
-          serverName: null,
-          startTime: null,
-        }),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to clear table")
-      }
-
-      dispatch({ type: "CLEAR_TABLE", payload: tableId })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to clear table")
-    }
-  }
-
-  const updateTablePosition = async (tableId: string, position: { x: number; y: number }) => {
-    try {
-      const response = await fetch(`/api/tables/${tableId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify({
-          positionX: position.x,
-          positionY: position.y,
-        }),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to update table position")
-      }
-
-      dispatch({
-        type: "UPDATE_TABLE_POSITION",
-        payload: { tableId, position },
-      })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to update table position")
-    }
-  }
-
-  const addTable = async (table: Table) => {
-    try {
-      const response = await fetch("/api/tables", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify({
-          number: table.number,
-          capacity: table.capacity,
-          status: table.status,
-          positionX: table.position.x,
-          positionY: table.position.y,
-        }),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to add table")
-      }
-
-      const newTable = await response.json()
-
-      dispatch({
-        type: "ADD_TABLE",
-        payload: {
-          ...newTable,
-          position: { x: newTable.positionX, y: newTable.positionY },
-        },
-      })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to add table")
-    }
-  }
-
-  const removeTable = async (tableId: string) => {
-    try {
-      const response = await fetch(`/api/tables/${tableId}`, {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${authState.token}`,
-        },
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to remove table")
-      }
-
-      dispatch({ type: "REMOVE_TABLE", payload: tableId })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to remove table")
-    }
-  }
-
-  return (
-    <TableContext.Provider
-      value={{
-        state,
-        fetchTables,
-        selectTable,
-        updateTableStatus,
-        occupyTable,
-        reserveTable,
-        clearTable,
-        updateTablePosition,
-        addTable,
-        removeTable,
-      }}
-    >
-      {children}
-    </TableContext.Provider>
+  const state = useMemo<TableState>(
+    () => ({
+      tables,
+      // The projection arriving *is* the load boundary; there is no separate
+      // fetch to await, so `loading` is simply "no snapshot yet".
+      loading: board === null,
+      error: null,
+      selectedTable: selected,
+    }),
+    [tables, board, selected],
   )
+
+  const reject = (title: string, err?: { message?: string; code?: string }, commandType?: string, payload?: Record<string, unknown>, serverActions?: SuggestedAction[]) => {
+    const code = err?.code;
+    const msg = err?.message;
+    const fromServer = suggestedToRecovery(serverActions, run, notify);
+    const base = fromServer.length > 0 ? fromServer : recoveryActionsFor(code);
+    const actions = code === "VERSION_CONFLICT" && commandType && payload
+      ? [
+          { label: "Retry", run: () => { void run(commandType, payload); } },
+          { label: "Reload", run: () => { window.location.reload(); } },
+          ...base,
+        ]
+      : base;
+    attention?.push({ title, message: msg, code, href: "/dashboard/tables" });
+    if (actions.length > 0) notifyWithActions(title, msg, actions);
+    else notify("error", title, msg);
+  };
+
+  /** Run a command and surface any domain rejection as a guided-recovery toast + attention record. */
+  const dispatch = async (
+    commandType: string,
+    payload: Record<string, unknown>,
+    successMessage: string,
+  ): Promise<boolean> => {
+    const result = await run(commandType, payload, {
+      onConflict: async (err) => {
+        reject("Table changed by another device", err, commandType, payload);
+        return "abort";
+      },
+    })
+    if (result.success) notify("success", successMessage)
+    else if (result.error?.code !== "VERSION_CONFLICT") reject("Table update rejected", result.error, commandType, payload, (result as { suggestedActions?: SuggestedAction[] }).suggestedActions)
+    return result.success
+  }
+
+
+  const api = useMemo<TableContextType>(
+    () => ({
+      state,
+      myTables,
+      assignedSection,
+      setAssignedSection,
+      // Retained for call-site compatibility. The projection refreshes itself,
+      // so there is nothing to fetch; resolving immediately keeps any caller
+      // that awaits this (and clears its own spinner) working.
+      fetchTables: async () => {},
+      selectTable: setSelected,
+
+      updateTableStatus: async (tableId, status) => {
+        // The kernel models the lifecycle as distinct commands rather than a
+        // free-form status write, so an illegal transition is refused here
+        // instead of corrupting the board.
+        switch (status) {
+          case "occupied":
+            await dispatch("table.seat", { tableId, orderId: `manual-${tableId}`, serverId: "unassigned" }, "Table occupied")
+            return
+          case "dirty":
+            await dispatch("table.clear", { tableId }, "Table marked for bussing")
+            return
+          case "available":
+            await dispatch("table.clean", { tableId }, "Table ready")
+            return
+          case "reserved":
+            // Reserving without a booking would strand the table, so this
+            // routes the host through the reservation flow instead.
+            notify("info", "Reserve this table from a reservation so the guest is attached")
+            return
+        }
+      },
+
+      occupyTable: async (tableId, customerName, customerCount, serverName) => {
+        await dispatch(
+          "table.seat",
+          {
+            tableId,
+            orderId: `walkin-${tableId}`,
+            serverId: serverName || "unassigned",
+            dinerName: customerName,
+            covers: customerCount,
+          },
+          `${customerName} seated`,
+        )
+      },
+
+      reserveTable: async (tableId, customerName) => {
+        await dispatch(
+          "table.reserve",
+          { tableId, reservationId: `manual-${tableId}`, customerName },
+          "Table reserved",
+        )
+      },
+
+      clearTable: async (tableId) => {
+        await dispatch("table.clear", { tableId }, "Table cleared")
+      },
+
+      updateTablePosition: async (tableId, position) => {
+        // The floor plan feels dead without a fast round trip, and the
+        // projection confirms a moment later. A rejected move surfaces with
+        // guided recovery and the next poll restores the truth.
+        const result = await run("table.reposition", { tableId, x: position.x, y: position.y })
+        if (!result.success) reject("Table move rejected", result.error, "table.reposition", { tableId, x: position.x, y: position.y }, (result as { suggestedActions?: SuggestedAction[] }).suggestedActions)
+      },
+
+      addTable: async (table: Table) => {
+        await dispatch(
+          "table.create",
+          {
+            tableId: table.id,
+            label: table.number,
+            capacity: table.capacity,
+            x: table.position?.x,
+            y: table.position?.y,
+          },
+          "Table added",
+        )
+      },
+
+      removeTable: async (tableId) => {
+        // There is deliberately no table.delete: floor-plan history is an audit
+        // trail, so a table leaves service rather than vanishing.
+        await dispatch("table.outOfService", { tableId }, "Table taken out of service")
+      },
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state, myTables, assignedSection, run, notify],
+  )
+
+  return <TableContext.Provider value={api}>{children}</TableContext.Provider>
 }
 
 // Custom hook

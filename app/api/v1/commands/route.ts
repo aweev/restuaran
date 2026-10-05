@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { apiKeyFromHeaders, checkApiKey } from "@/kernel/server/api-key"
 import { getKernel } from "@/kernel/server/kernel-singleton"
+import { rateLimit, getClientIp } from "@/lib/rate-limiter"
 
 export const runtime = "nodejs"
 
@@ -29,6 +30,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { success: false, commandId: "", error: { code: "INVALID_REQUEST", message: "commandType is required" } },
       { status: 400 }
+    )
+  }
+
+  const limited = await rateLimit(`v1:${auth.role}:${getClientIp(req)}`, {
+    maxAttempts: 120,
+    windowMs: 60 * 1000,
+    keyPrefix: "v1:commands:",
+  })
+  if (limited.blocked) {
+    return NextResponse.json(
+      { success: false, commandId: "", error: { code: "RATE_LIMITED", message: "Too many requests" } },
+      { status: 429 },
     )
   }
 

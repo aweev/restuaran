@@ -16,9 +16,9 @@ export function OrderSocketIntegration({ orderId }: OrderSocketIntegrationProps)
 
   // Initialize socket when component mounts
   useEffect(() => {
-    if (authState.isAuthenticated && authState.token) {
+    if (authState.isAuthenticated && authState.accessToken) {
       // Connecting the socket is a side effect of the lib; the instance itself is not needed here.
-      initializeSocket(authState.token)
+      initializeSocket(authState.accessToken)
 
       // Join the order-specific room
       joinRoom(`order:${orderId}`)
@@ -28,7 +28,7 @@ export function OrderSocketIntegration({ orderId }: OrderSocketIntegrationProps)
         leaveRoom(`order:${orderId}`)
       }
     }
-  }, [authState.isAuthenticated, authState.token, orderId])
+  }, [authState.isAuthenticated, authState.accessToken, orderId])
 
   // Listen for order events
   const events = useSocketEvents([

@@ -1,9 +1,13 @@
 "use client"
 
 import type React from "react"
-import { createContext, useContext, useReducer, useCallback } from "react"
+import { createContext, useContext, useMemo, useCallback } from "react"
 import type { Ingredient } from "@/types/inventory"
-import { useAuth } from "./AuthContext"
+import { useCommand, useProjection } from "@/kernel/react/kernel-provider"
+import type { InventoryBoardState } from "@/kernel/projections/builtins"
+import { inventoryRowsToIngredients } from "@/lib/kernel-mappers"
+import { useFeedback, notifyWithActions, recoveryActionsFor } from "@/lib/feedback"
+import { useAttentionOptional } from "@/context/AttentionContext"
 
 // Define the state type
 interface InventoryState {
@@ -11,16 +15,6 @@ interface InventoryState {
   loading: boolean
   error: string | null
 }
-
-// Define the action types
-type InventoryAction =
-  | { type: "FETCH_INVENTORY_REQUEST" }
-  | { type: "FETCH_INVENTORY_SUCCESS"; payload: Ingredient[] }
-  | { type: "FETCH_INVENTORY_FAILURE"; payload: string }
-  | { type: "ADD_INGREDIENT"; payload: Ingredient }
-  | { type: "UPDATE_INGREDIENT"; payload: Ingredient }
-  | { type: "UPDATE_INGREDIENT_STOCK"; payload: { id: string; quantity: number } }
-  | { type: "DELETE_INGREDIENT"; payload: string }
 
 // Define the context type
 interface InventoryContextType {
@@ -35,286 +29,142 @@ interface InventoryContextType {
 // Create the context
 const InventoryContext = createContext<InventoryContextType | undefined>(undefined)
 
-// Initial state
-const initialState: InventoryState = {
-  ingredients: [],
-  loading: false,
-  error: null,
-}
-
-// Reducer function
-function inventoryReducer(state: InventoryState, action: InventoryAction): InventoryState {
-  switch (action.type) {
-    case "FETCH_INVENTORY_REQUEST":
-      return {
-        ...state,
-        loading: true,
-        error: null,
-      }
-    case "FETCH_INVENTORY_SUCCESS":
-      return {
-        ...state,
-        ingredients: Array.isArray(action.payload) ? action.payload : [],
-        loading: false,
-      }
-    case "FETCH_INVENTORY_FAILURE":
-      return {
-        ...state,
-        loading: false,
-        error: action.payload,
-      }
-    case "ADD_INGREDIENT":
-      return {
-        ...state,
-        ingredients: [...state.ingredients, action.payload],
-      }
-    case "UPDATE_INGREDIENT":
-      return {
-        ...state,
-        ingredients: state.ingredients.map((ingredient) =>
-          ingredient.id === action.payload.id ? action.payload : ingredient,
-        ),
-      }
-    case "UPDATE_INGREDIENT_STOCK":
-      return {
-        ...state,
-        ingredients: state.ingredients.map((ingredient) =>
-          ingredient.id === action.payload.id
-            ? {
-                ...ingredient,
-                currentStock: ingredient.currentStock + action.payload.quantity,
-                lastUpdated: new Date().toISOString(),
-              }
-            : ingredient,
-        ),
-      }
-    case "DELETE_INGREDIENT":
-      return {
-        ...state,
-        ingredients: state.ingredients.filter((ingredient) => ingredient.id !== action.payload),
-      }
-    default:
-      return state
-  }
-}
-
-// Provider component
+/**
+ * Inventory, backed by the event store.
+ *
+ * The list is the `inventory.board` projection and every mutation is a kernel
+ * command, so stock can never drift from its ledger: receipts, consumption,
+ * wastage and stock-takes are all events, and the low-stock board derives
+ * from the same stream the auto-86 hook reads.
+ *
+ * Two deliberate mappings: a direct stock edit in the edit form becomes an
+ * audited `inventory.adjust` stock-take (the form's intent — "the shelf says
+ * X" — is exactly a stock-take), and DELETE becomes deactivation
+ * (`isActive: false`): consumption history must survive for food-cost
+ * reporting, so an ingredient leaves the board instead of vanishing.
+ */
 export function InventoryProvider({ children }: { children: React.ReactNode }) {
-  const [state, dispatch] = useReducer(inventoryReducer, initialState)
-  const { state: authState } = useAuth()
+  const { state: board } = useProjection<InventoryBoardState>("inventory.board", 2000)
+  const { run } = useCommand()
+  const { notify } = useFeedback()
+  const attention = useAttentionOptional()
+
+  const reject = (title: string, err?: { message?: string; code?: string }) => {
+    const actions = recoveryActionsFor(err?.code);
+    attention?.push({ title, message: err?.message, code: err?.code, href: "/dashboard/inventory" });
+    if (actions.length > 0) notifyWithActions(title, err?.message, actions);
+    else notify("error", title, err?.message);
+  };
+
+  const ingredients = useMemo(() => inventoryRowsToIngredients(board?.rows ?? []), [board])
+
+  const state = useMemo<InventoryState>(
+    () => ({
+      ingredients,
+      loading: board === null,
+      error: null,
+    }),
+    [ingredients, board],
+  )
 
   // Real API calls
   const fetchInventory = useCallback(async () => {
-    if (!authState.token) return
-
-    dispatch({ type: "FETCH_INVENTORY_REQUEST" })
-    try {
-      const response = await fetch("/api/inventory", {
-        headers: {
-          Authorization: `Bearer ${authState.token}`,
-        },
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch inventory")
-      }
-
-      const data = await response.json()
-
-      // Transform data if needed (snake_case to camelCase)
-      const ingredients = data.map((item: Record<string, unknown>) => ({
-        id: item.id,
-        name: item.name,
-        category: item.category,
-        unit: item.unit,
-        currentStock: item.current_stock,
-        reorderLevel: item.reorder_level,
-        unitCost: item.unit_cost,
-        usageLastMonth: item.usage_last_month,
-        isActive: item.is_active,
-        lastUpdated: item.updated_at,
-      }))
-
-      dispatch({ type: "FETCH_INVENTORY_SUCCESS", payload: ingredients })
-    } catch (error) {
-      console.error("Error fetching inventory:", error)
-      dispatch({
-        type: "FETCH_INVENTORY_FAILURE",
-        payload: error instanceof Error ? error.message : "Failed to fetch inventory",
-      })
-    }
-  }, [authState.token])
+    // Retained for call-site compatibility; the projection refreshes itself.
+  }, [])
 
   const addIngredient = useCallback(
     async (ingredient: Ingredient) => {
-      if (!authState.token) return
-
-      try {
-        const response = await fetch("/api/inventory", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${authState.token}`,
-          },
-          body: JSON.stringify({
-            name: ingredient.name,
-            category: ingredient.category,
-            unit: ingredient.unit,
-            currentStock: ingredient.currentStock,
-            reorderLevel: ingredient.reorderLevel,
-            unitCost: ingredient.unitCost,
-            isActive: ingredient.isActive,
-          }),
+      if (!ingredient.name?.trim()) throw new Error("Ingredient name is required")
+      const defined = await run("inventory.defineItem", {
+        itemId: ingredient.id || undefined,
+        name: ingredient.name.trim(),
+        unit: ingredient.unit || "ea",
+        ...(ingredient.reorderLevel ? { reorderPoint: ingredient.reorderLevel } : {}),
+        ...(ingredient.unitCost ? { unitCost: ingredient.unitCost } : {}),
+        ...(ingredient.category ? { category: ingredient.category } : {}),
+      })
+      if (!defined.success) reject("Failed to add ingredient", defined.error)
+      const id = (defined as { aggregateId?: string }).aggregateId ?? ingredient.id
+      // Opening stock is a receipt like any other, so it lands in the ledger.
+      if (ingredient.currentStock > 0) {
+        const received = await run("inventory.receive", {
+          itemId: id,
+          quantity: ingredient.currentStock,
+          note: "opening stock",
         })
-
-        if (!response.ok) {
-          throw new Error("Failed to add ingredient")
-        }
-
-        const data = await response.json()
-
-        // Transform response if needed
-        const newIngredient = {
-          id: data.id,
-          name: data.name,
-          category: data.category,
-          unit: data.unit,
-          currentStock: data.current_stock,
-          reorderLevel: data.reorder_level,
-          unitCost: data.unit_cost,
-          usageLastMonth: data.usage_last_month || 0,
-          isActive: data.is_active,
-          lastUpdated: data.updated_at,
-        }
-
-        dispatch({ type: "ADD_INGREDIENT", payload: newIngredient })
-      } catch (error) {
-        console.error("Error adding ingredient:", error)
-        throw error
+        if (!received.success) reject("Ingredient defined but opening stock was rejected", received.error)
+      }
+      if (ingredient.isActive === false) {
+        const deactivated = await run("inventory.updateItem", { itemId: id, isActive: false })
+        if (!deactivated.success) reject("Failed to add ingredient", deactivated.error)
       }
     },
-    [authState.token],
+    [run],
   )
 
   const updateIngredient = useCallback(
     async (ingredient: Ingredient) => {
-      if (!authState.token) return
-
-      try {
-        const response = await fetch(`/api/inventory/${ingredient.id}`, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${authState.token}`,
-          },
-          body: JSON.stringify({
-            name: ingredient.name,
-            category: ingredient.category,
-            unit: ingredient.unit,
-            currentStock: ingredient.currentStock,
-            reorderLevel: ingredient.reorderLevel,
-            unitCost: ingredient.unitCost,
-            isActive: ingredient.isActive,
-          }),
+      if (!ingredient.name?.trim()) throw new Error("Ingredient name is required")
+      const updated = await run("inventory.updateItem", {
+        itemId: ingredient.id,
+        name: ingredient.name.trim(),
+        unit: ingredient.unit,
+        reorderPoint: ingredient.reorderLevel,
+        unitCost: ingredient.unitCost,
+        category: ingredient.category,
+        isActive: ingredient.isActive,
+      })
+      if (!updated.success) reject("Failed to update ingredient", updated.error)
+      // A stock edit is a stock-take: the shelf count is authoritative and the
+      // delta is the auditable event, not the typed number.
+      const current = board?.rows.find((r) => r.itemId === ingredient.id)
+      if (current && Number(current.onHand) !== Number(ingredient.currentStock)) {
+        const adjusted = await run("inventory.adjust", {
+          itemId: ingredient.id,
+          counted: ingredient.currentStock,
+          reason: "manual correction from stock screen",
         })
-
-        if (!response.ok) {
-          throw new Error("Failed to update ingredient")
-        }
-
-        const data = await response.json()
-
-        // Transform response if needed
-        const updatedIngredient = {
-          id: data.id,
-          name: data.name,
-          category: data.category,
-          unit: data.unit,
-          currentStock: data.current_stock,
-          reorderLevel: data.reorder_level,
-          unitCost: data.unit_cost,
-          usageLastMonth: data.usage_last_month || ingredient.usageLastMonth || 0,
-          isActive: data.is_active,
-          lastUpdated: data.updated_at,
-        }
-
-        dispatch({ type: "UPDATE_INGREDIENT", payload: updatedIngredient })
-      } catch (error) {
-        console.error("Error updating ingredient:", error)
-        throw error
+        if (!adjusted.success) reject("Details saved but the stock count was rejected", adjusted.error)
       }
     },
-    [authState.token],
+    [run, board],
   )
 
   const updateIngredientStock = useCallback(
     async (id: string, quantity: number) => {
-      if (!authState.token) return
-
-      try {
-        // Get current ingredient to calculate new stock
-        const ingredient = state.ingredients.find((i) => i.id === id)
-        if (!ingredient) throw new Error("Ingredient not found")
-
-        const newStock = ingredient.currentStock + quantity
-
-        const response = await fetch(`/api/inventory/${id}`, {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${authState.token}`,
-          },
-          body: JSON.stringify({
-            currentStock: newStock,
-          }),
-        })
-
-        if (!response.ok) {
-          throw new Error("Failed to update ingredient stock")
-        }
-
-        dispatch({ type: "UPDATE_INGREDIENT_STOCK", payload: { id, quantity } })
-      } catch (error) {
-        console.error("Error updating ingredient stock:", error)
-        throw error
-      }
+      if (!Number.isFinite(quantity) || quantity === 0) throw new Error("Quantity must be a non-zero number")
+      // Positive deltas are receipts; negative deltas are consumption, which
+      // the kernel guards with INSUFFICIENT_STOCK instead of going negative.
+      const result =
+        quantity > 0
+          ? await run("inventory.receive", { itemId: id, quantity })
+          : await run("inventory.consume", { itemId: id, quantity: Math.abs(quantity) })
+      if (!result.success) reject("Failed to update ingredient stock", result.error)
     },
-    [authState.token, state.ingredients],
+    [run],
   )
 
   const deleteIngredient = useCallback(
     async (id: string) => {
-      if (!authState.token) return
-
-      try {
-        const response = await fetch(`/api/inventory/${id}`, {
-          method: "DELETE",
-          headers: {
-            Authorization: `Bearer ${authState.token}`,
-          },
-        })
-
-        if (!response.ok) {
-          throw new Error("Failed to delete ingredient")
-        }
-
-        dispatch({ type: "DELETE_INGREDIENT", payload: id })
-      } catch (error) {
-        console.error("Error deleting ingredient:", error)
-        throw error
-      }
+      // No hard delete: consumption history feeds food-cost reporting, so the
+      // ingredient leaves the active board instead of vanishing from it.
+      const result = await run("inventory.updateItem", { itemId: id, isActive: false })
+      if (!result.success) reject("Failed to delete ingredient", result.error)
     },
-    [authState.token],
+    [run],
   )
 
-  const value = {
-    state,
-    fetchInventory,
-    addIngredient,
-    updateIngredient,
-    updateIngredientStock,
-    deleteIngredient,
-  }
+  const value = useMemo(
+    () => ({
+      state,
+      fetchInventory,
+      addIngredient,
+      updateIngredient,
+      updateIngredientStock,
+      deleteIngredient,
+    }),
+    [state, fetchInventory, addIngredient, updateIngredient, updateIngredientStock, deleteIngredient],
+  )
 
   return <InventoryContext.Provider value={value}>{children}</InventoryContext.Provider>
 }

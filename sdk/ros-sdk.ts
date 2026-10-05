@@ -6,12 +6,27 @@
 // Surface captured at generation time:
 //   {
 //     "commands": [
+//       "customer.addReward",
+//       "customer.awardPoints",
+//       "customer.enrol",
+//       "customer.recordVisit",
+//       "customer.redeemReward",
+//       "customer.submitFeedback",
+//       "customer.update",
+//       "giftcard.issue",
+//       "giftcard.load",
+//       "giftcard.redeem",
+//       "giftcard.refund",
+//       "giftcard.void",
 //       "inventory.adjust",
 //       "inventory.consume",
 //       "inventory.defineItem",
 //       "inventory.receive",
 //       "inventory.recordWastage",
+//       "inventory.updateItem",
+//       "kitchen.assignStation",
 //       "kitchen.beginLine",
+//       "kitchen.clearStation",
 //       "kitchen.readyLine",
 //       "kitchen.serveLine",
 //       "menu.addModifierGroup",
@@ -20,17 +35,39 @@
 //       "menu.createItem",
 //       "menu.eightySix",
 //       "menu.setAvailability",
+//       "menu.setPrepTime",
+//       "menu.setRecipe",
+//       "menu.updateItem",
 //       "order.addLine",
+//       "order.addTip",
+//       "order.applyDiscount",
+//       "order.applyTax",
 //       "order.close",
+//       "order.comp",
+//       "order.compLine",
 //       "order.create",
+//       "order.fireCourse",
+//       "order.holdCourse",
 //       "order.recordPayment",
+//       "order.releaseCourse",
 //       "order.sendToKitchen",
+//       "order.setNotes",
+//       "order.setTable",
+//       "order.split",
+//       "order.transferLines",
 //       "order.void",
 //       "order.voidLine",
 //       "outbound.replay",
+//       "payment.authorize",
+//       "payment.capture",
+//       "payment.refund",
+//       "payment.voidAuth",
 //       "platform.cancelOrder",
 //       "platform.completeOrder",
 //       "platform.ingestOrder",
+//       "promotion.define",
+//       "promotion.recordRedemption",
+//       "promotion.setActive",
 //       "reservation.book",
 //       "reservation.cancel",
 //       "reservation.complete",
@@ -38,6 +75,7 @@
 //       "reservation.markNoShow",
 //       "reservation.reschedule",
 //       "reservation.seat",
+//       "reservation.updateDetails",
 //       "staff.clockIn",
 //       "staff.clockOut",
 //       "staff.endBreak",
@@ -46,48 +84,90 @@
 //       "table.clean",
 //       "table.clear",
 //       "table.create",
+//       "table.outOfService",
+//       "table.reposition",
 //       "table.seat",
+//       "venue.configureTax",
+//       "venue.create",
+//       "venue.update",
 //       "waitlist.join",
 //       "waitlist.notify",
 //       "waitlist.remove",
 //       "waitlist.seat",
+//       "waitlist.seatAtTable",
 //       "webhook.subscribe",
 //       "webhook.unsubscribe",
 //       "webhook.update"
 //     ],
 //     "queries": [
 //       "get.aggregateEvents",
+//       "get.customer",
+//       "get.giftcard",
+//       "get.giftcardByNumber",
 //       "get.inventoryItem",
 //       "get.menuItem",
 //       "get.order",
+//       "get.payment",
 //       "get.platformOrder",
+//       "get.promotion",
 //       "get.reservation",
 //       "get.shift",
 //       "get.table",
 //       "get.waitlistEntry",
+//       "list.customers",
+//       "list.giftcards",
+//       "list.inventory",
+//       "list.loyalty.rewards",
 //       "list.menu",
 //       "list.menu.sellable",
 //       "list.outbound",
+//       "list.payments",
 //       "list.platformOrders",
+//       "list.promotions",
 //       "list.reservations.onDate",
 //       "list.staffing.board",
+//       "list.venues",
 //       "list.waitQueue",
-//       "list.webhooks"
+//       "list.webhooks",
+//       "promotion.evaluate"
 //     ],
 //     "projections": [
+//       "customers.board",
+//       "giftcards.board",
 //       "inventory.board",
 //       "kitchen.queue",
 //       "menu.board",
+//       "orders.board",
+//       "payments.board",
 //       "platform.orders",
+//       "promotions.board",
 //       "reservations.board",
+//       "sales.board",
+//       "staff.board",
 //       "tables.board",
+//       "venues.board",
 //       "waitlist.board",
 //       "webhooks.endpoints"
 //     ],
 //     "modules": [
 //       {
+//         "id": "ros.customers",
+//         "name": "Customers, Loyalty & Feedback",
+//         "version": "1.0.0"
+//       },
+//       {
+//         "id": "ros.giftcards",
+//         "name": "Gift cards",
+//         "version": "1.0.0"
+//       },
+//       {
 //         "id": "ros.integrations",
 //         "name": "Integrations",
+//         "version": "1.0.0"
+//       },
+//       {
+//         "id": "ros.inventory",
+//         "name": "Inventory",
 //         "version": "1.0.0"
 //       },
 //       {
@@ -96,8 +176,18 @@
 //         "version": "1.0.0"
 //       },
 //       {
+//         "id": "ros.payments",
+//         "name": "Payments",
+//         "version": "1.0.0"
+//       },
+//       {
 //         "id": "ros.platform",
 //         "name": "Platform Orders",
+//         "version": "1.0.0"
+//       },
+//       {
+//         "id": "ros.promotions",
+//         "name": "Promotions",
 //         "version": "1.0.0"
 //       },
 //       {
@@ -108,6 +198,11 @@
 //       {
 //         "id": "ros.staff",
 //         "name": "Staff Scheduling & Time Clock",
+//         "version": "1.0.0"
+//       },
+//       {
+//         "id": "ros.venues",
+//         "name": "Venues",
 //         "version": "1.0.0"
 //       },
 //       {
@@ -163,9 +258,9 @@ export class SdkError extends Error {
 
 /** Typed client generated from the live kernel surface. */
 export class RosSdk {
-  static readonly commandTypes: readonly string[] = ["inventory.adjust", "inventory.consume", "inventory.defineItem", "inventory.receive", "inventory.recordWastage", "kitchen.beginLine", "kitchen.readyLine", "kitchen.serveLine", "menu.addModifierGroup", "menu.changePrice", "menu.clearEightySix", "menu.createItem", "menu.eightySix", "menu.setAvailability", "order.addLine", "order.close", "order.create", "order.recordPayment", "order.sendToKitchen", "order.void", "order.voidLine", "outbound.replay", "platform.cancelOrder", "platform.completeOrder", "platform.ingestOrder", "reservation.book", "reservation.cancel", "reservation.complete", "reservation.confirm", "reservation.markNoShow", "reservation.reschedule", "reservation.seat", "staff.clockIn", "staff.clockOut", "staff.endBreak", "staff.scheduleShift", "staff.startBreak", "table.clean", "table.clear", "table.create", "table.seat", "waitlist.join", "waitlist.notify", "waitlist.remove", "waitlist.seat", "webhook.subscribe", "webhook.unsubscribe", "webhook.update"]
-  static readonly queryTypes: readonly string[] = ["get.aggregateEvents", "get.inventoryItem", "get.menuItem", "get.order", "get.platformOrder", "get.reservation", "get.shift", "get.table", "get.waitlistEntry", "list.menu", "list.menu.sellable", "list.outbound", "list.platformOrders", "list.reservations.onDate", "list.staffing.board", "list.waitQueue", "list.webhooks"]
-  static readonly projectionNames: readonly string[] = ["inventory.board", "kitchen.queue", "menu.board", "platform.orders", "reservations.board", "tables.board", "waitlist.board", "webhooks.endpoints"]
+  static readonly commandTypes: readonly string[] = ["customer.addReward", "customer.awardPoints", "customer.enrol", "customer.recordVisit", "customer.redeemReward", "customer.submitFeedback", "customer.update", "giftcard.issue", "giftcard.load", "giftcard.redeem", "giftcard.refund", "giftcard.void", "inventory.adjust", "inventory.consume", "inventory.defineItem", "inventory.receive", "inventory.recordWastage", "inventory.updateItem", "kitchen.assignStation", "kitchen.beginLine", "kitchen.clearStation", "kitchen.readyLine", "kitchen.serveLine", "menu.addModifierGroup", "menu.changePrice", "menu.clearEightySix", "menu.createItem", "menu.eightySix", "menu.setAvailability", "menu.setPrepTime", "menu.setRecipe", "menu.updateItem", "order.addLine", "order.addTip", "order.applyDiscount", "order.applyTax", "order.close", "order.comp", "order.compLine", "order.create", "order.fireCourse", "order.holdCourse", "order.recordPayment", "order.releaseCourse", "order.sendToKitchen", "order.setNotes", "order.setTable", "order.split", "order.transferLines", "order.void", "order.voidLine", "outbound.replay", "payment.authorize", "payment.capture", "payment.refund", "payment.voidAuth", "platform.cancelOrder", "platform.completeOrder", "platform.ingestOrder", "promotion.define", "promotion.recordRedemption", "promotion.setActive", "reservation.book", "reservation.cancel", "reservation.complete", "reservation.confirm", "reservation.markNoShow", "reservation.reschedule", "reservation.seat", "reservation.updateDetails", "staff.clockIn", "staff.clockOut", "staff.endBreak", "staff.scheduleShift", "staff.startBreak", "table.clean", "table.clear", "table.create", "table.outOfService", "table.reposition", "table.seat", "venue.configureTax", "venue.create", "venue.update", "waitlist.join", "waitlist.notify", "waitlist.remove", "waitlist.seat", "waitlist.seatAtTable", "webhook.subscribe", "webhook.unsubscribe", "webhook.update"]
+  static readonly queryTypes: readonly string[] = ["get.aggregateEvents", "get.customer", "get.giftcard", "get.giftcardByNumber", "get.inventoryItem", "get.menuItem", "get.order", "get.payment", "get.platformOrder", "get.promotion", "get.reservation", "get.shift", "get.table", "get.waitlistEntry", "list.customers", "list.giftcards", "list.inventory", "list.loyalty.rewards", "list.menu", "list.menu.sellable", "list.outbound", "list.payments", "list.platformOrders", "list.promotions", "list.reservations.onDate", "list.staffing.board", "list.venues", "list.waitQueue", "list.webhooks", "promotion.evaluate"]
+  static readonly projectionNames: readonly string[] = ["customers.board", "giftcards.board", "inventory.board", "kitchen.queue", "menu.board", "orders.board", "payments.board", "platform.orders", "promotions.board", "reservations.board", "sales.board", "staff.board", "tables.board", "venues.board", "waitlist.board", "webhooks.endpoints"]
 
   private readonly baseUrl: string
   private readonly apiKey?: string
@@ -260,6 +355,66 @@ export class RosSdk {
     return body as unknown as { name: string; position: number; state: T }
   }
 
+  /** Dispatches "customer.addReward". */
+  customerAddReward(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("customer.addReward", payload)
+  }
+
+  /** Dispatches "customer.awardPoints". */
+  customerAwardPoints(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("customer.awardPoints", payload)
+  }
+
+  /** Dispatches "customer.enrol". */
+  customerEnrol(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("customer.enrol", payload)
+  }
+
+  /** Dispatches "customer.recordVisit". */
+  customerRecordVisit(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("customer.recordVisit", payload)
+  }
+
+  /** Dispatches "customer.redeemReward". */
+  customerRedeemReward(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("customer.redeemReward", payload)
+  }
+
+  /** Dispatches "customer.submitFeedback". */
+  customerSubmitFeedback(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("customer.submitFeedback", payload)
+  }
+
+  /** Dispatches "customer.update". */
+  customerUpdate(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("customer.update", payload)
+  }
+
+  /** Dispatches "giftcard.issue". */
+  giftcardIssue(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("giftcard.issue", payload)
+  }
+
+  /** Dispatches "giftcard.load". */
+  giftcardLoad(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("giftcard.load", payload)
+  }
+
+  /** Dispatches "giftcard.redeem". */
+  giftcardRedeem(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("giftcard.redeem", payload)
+  }
+
+  /** Dispatches "giftcard.refund". */
+  giftcardRefund(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("giftcard.refund", payload)
+  }
+
+  /** Dispatches "giftcard.void". */
+  giftcardVoid(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("giftcard.void", payload)
+  }
+
   /** Dispatches "inventory.adjust". */
   inventoryAdjust(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
     return this.command("inventory.adjust", payload)
@@ -285,9 +440,24 @@ export class RosSdk {
     return this.command("inventory.recordWastage", payload)
   }
 
+  /** Dispatches "inventory.updateItem". */
+  inventoryUpdateItem(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("inventory.updateItem", payload)
+  }
+
+  /** Dispatches "kitchen.assignStation". */
+  kitchenAssignStation(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("kitchen.assignStation", payload)
+  }
+
   /** Dispatches "kitchen.beginLine". */
   kitchenBeginLine(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
     return this.command("kitchen.beginLine", payload)
+  }
+
+  /** Dispatches "kitchen.clearStation". */
+  kitchenClearStation(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("kitchen.clearStation", payload)
   }
 
   /** Dispatches "kitchen.readyLine". */
@@ -330,9 +500,39 @@ export class RosSdk {
     return this.command("menu.setAvailability", payload)
   }
 
+  /** Dispatches "menu.setPrepTime". */
+  menuSetPrepTime(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("menu.setPrepTime", payload)
+  }
+
+  /** Dispatches "menu.setRecipe". */
+  menuSetRecipe(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("menu.setRecipe", payload)
+  }
+
+  /** Dispatches "menu.updateItem". */
+  menuUpdateItem(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("menu.updateItem", payload)
+  }
+
   /** Dispatches "order.addLine". */
   orderAddLine(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
     return this.command("order.addLine", payload)
+  }
+
+  /** Dispatches "order.addTip". */
+  orderAddTip(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("order.addTip", payload)
+  }
+
+  /** Dispatches "order.applyDiscount". */
+  orderApplyDiscount(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("order.applyDiscount", payload)
+  }
+
+  /** Dispatches "order.applyTax". */
+  orderApplyTax(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("order.applyTax", payload)
   }
 
   /** Dispatches "order.close". */
@@ -340,9 +540,29 @@ export class RosSdk {
     return this.command("order.close", payload)
   }
 
+  /** Dispatches "order.comp". */
+  orderComp(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("order.comp", payload)
+  }
+
+  /** Dispatches "order.compLine". */
+  orderCompLine(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("order.compLine", payload)
+  }
+
   /** Dispatches "order.create". */
   orderCreate(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
     return this.command("order.create", payload)
+  }
+
+  /** Dispatches "order.fireCourse". */
+  orderFireCourse(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("order.fireCourse", payload)
+  }
+
+  /** Dispatches "order.holdCourse". */
+  orderHoldCourse(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("order.holdCourse", payload)
   }
 
   /** Dispatches "order.recordPayment". */
@@ -350,9 +570,34 @@ export class RosSdk {
     return this.command("order.recordPayment", payload)
   }
 
+  /** Dispatches "order.releaseCourse". */
+  orderReleaseCourse(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("order.releaseCourse", payload)
+  }
+
   /** Dispatches "order.sendToKitchen". */
   orderSendToKitchen(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
     return this.command("order.sendToKitchen", payload)
+  }
+
+  /** Dispatches "order.setNotes". */
+  orderSetNotes(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("order.setNotes", payload)
+  }
+
+  /** Dispatches "order.setTable". */
+  orderSetTable(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("order.setTable", payload)
+  }
+
+  /** Dispatches "order.split". */
+  orderSplit(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("order.split", payload)
+  }
+
+  /** Dispatches "order.transferLines". */
+  orderTransferLines(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("order.transferLines", payload)
   }
 
   /** Dispatches "order.void". */
@@ -370,6 +615,26 @@ export class RosSdk {
     return this.command("outbound.replay", payload)
   }
 
+  /** Dispatches "payment.authorize". */
+  paymentAuthorize(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("payment.authorize", payload)
+  }
+
+  /** Dispatches "payment.capture". */
+  paymentCapture(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("payment.capture", payload)
+  }
+
+  /** Dispatches "payment.refund". */
+  paymentRefund(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("payment.refund", payload)
+  }
+
+  /** Dispatches "payment.voidAuth". */
+  paymentVoidAuth(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("payment.voidAuth", payload)
+  }
+
   /** Dispatches "platform.cancelOrder". */
   platformCancelOrder(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
     return this.command("platform.cancelOrder", payload)
@@ -383,6 +648,21 @@ export class RosSdk {
   /** Dispatches "platform.ingestOrder". */
   platformIngestOrder(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
     return this.command("platform.ingestOrder", payload)
+  }
+
+  /** Dispatches "promotion.define". */
+  promotionDefine(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("promotion.define", payload)
+  }
+
+  /** Dispatches "promotion.recordRedemption". */
+  promotionRecordRedemption(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("promotion.recordRedemption", payload)
+  }
+
+  /** Dispatches "promotion.setActive". */
+  promotionSetActive(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("promotion.setActive", payload)
   }
 
   /** Dispatches "reservation.book". */
@@ -418,6 +698,11 @@ export class RosSdk {
   /** Dispatches "reservation.seat". */
   reservationSeat(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
     return this.command("reservation.seat", payload)
+  }
+
+  /** Dispatches "reservation.updateDetails". */
+  reservationUpdateDetails(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("reservation.updateDetails", payload)
   }
 
   /** Dispatches "staff.clockIn". */
@@ -460,9 +745,34 @@ export class RosSdk {
     return this.command("table.create", payload)
   }
 
+  /** Dispatches "table.outOfService". */
+  tableOutOfService(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("table.outOfService", payload)
+  }
+
+  /** Dispatches "table.reposition". */
+  tableReposition(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("table.reposition", payload)
+  }
+
   /** Dispatches "table.seat". */
   tableSeat(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
     return this.command("table.seat", payload)
+  }
+
+  /** Dispatches "venue.configureTax". */
+  venueConfigureTax(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("venue.configureTax", payload)
+  }
+
+  /** Dispatches "venue.create". */
+  venueCreate(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("venue.create", payload)
+  }
+
+  /** Dispatches "venue.update". */
+  venueUpdate(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("venue.update", payload)
   }
 
   /** Dispatches "waitlist.join". */
@@ -485,6 +795,11 @@ export class RosSdk {
     return this.command("waitlist.seat", payload)
   }
 
+  /** Dispatches "waitlist.seatAtTable". */
+  waitlistSeatAtTable(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
+    return this.command("waitlist.seatAtTable", payload)
+  }
+
   /** Dispatches "webhook.subscribe". */
   webhookSubscribe(payload: Record<string, unknown> = {}): Promise<SdkCommandResult> {
     return this.command("webhook.subscribe", payload)
@@ -505,6 +820,21 @@ export class RosSdk {
     return this.query<T>("get.aggregateEvents", params)
   }
 
+  /** Runs "get.customer". */
+  getCustomer<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
+    return this.query<T>("get.customer", params)
+  }
+
+  /** Runs "get.giftcard". */
+  getGiftcard<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
+    return this.query<T>("get.giftcard", params)
+  }
+
+  /** Runs "get.giftcardByNumber". */
+  getGiftcardByNumber<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
+    return this.query<T>("get.giftcardByNumber", params)
+  }
+
   /** Runs "get.inventoryItem". */
   getInventoryItem<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
     return this.query<T>("get.inventoryItem", params)
@@ -520,9 +850,19 @@ export class RosSdk {
     return this.query<T>("get.order", params)
   }
 
+  /** Runs "get.payment". */
+  getPayment<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
+    return this.query<T>("get.payment", params)
+  }
+
   /** Runs "get.platformOrder". */
   getPlatformOrder<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
     return this.query<T>("get.platformOrder", params)
+  }
+
+  /** Runs "get.promotion". */
+  getPromotion<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
+    return this.query<T>("get.promotion", params)
   }
 
   /** Runs "get.reservation". */
@@ -545,6 +885,26 @@ export class RosSdk {
     return this.query<T>("get.waitlistEntry", params)
   }
 
+  /** Runs "list.customers". */
+  listCustomers<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
+    return this.query<T>("list.customers", params)
+  }
+
+  /** Runs "list.giftcards". */
+  listGiftcards<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
+    return this.query<T>("list.giftcards", params)
+  }
+
+  /** Runs "list.inventory". */
+  listInventory<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
+    return this.query<T>("list.inventory", params)
+  }
+
+  /** Runs "list.loyalty.rewards". */
+  listLoyaltyRewards<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
+    return this.query<T>("list.loyalty.rewards", params)
+  }
+
   /** Runs "list.menu". */
   listMenu<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
     return this.query<T>("list.menu", params)
@@ -560,9 +920,19 @@ export class RosSdk {
     return this.query<T>("list.outbound", params)
   }
 
+  /** Runs "list.payments". */
+  listPayments<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
+    return this.query<T>("list.payments", params)
+  }
+
   /** Runs "list.platformOrders". */
   listPlatformOrders<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
     return this.query<T>("list.platformOrders", params)
+  }
+
+  /** Runs "list.promotions". */
+  listPromotions<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
+    return this.query<T>("list.promotions", params)
   }
 
   /** Runs "list.reservations.onDate". */
@@ -575,6 +945,11 @@ export class RosSdk {
     return this.query<T>("list.staffing.board", params)
   }
 
+  /** Runs "list.venues". */
+  listVenues<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
+    return this.query<T>("list.venues", params)
+  }
+
   /** Runs "list.waitQueue". */
   listWaitQueue<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
     return this.query<T>("list.waitQueue", params)
@@ -583,5 +958,10 @@ export class RosSdk {
   /** Runs "list.webhooks". */
   listWebhooks<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
     return this.query<T>("list.webhooks", params)
+  }
+
+  /** Runs "promotion.evaluate". */
+  promotionEvaluate<T = unknown>(params: Record<string, unknown> = {}): Promise<T> {
+    return this.query<T>("promotion.evaluate", params)
   }
 }

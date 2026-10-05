@@ -1,21 +1,20 @@
-// lib/auth-utils.ts
+// lib/auth-utils.ts — compat layer over the canonical jose stack in lib/jwt.ts.
+// New code should import from "@/lib/jwt" directly.
 import { z } from "zod";
 import { hash, compare } from "bcrypt";
 import { sql } from "@/lib/db";
-import jwt, { JwtPayload } from "jsonwebtoken";
+import { verifyAccessToken, getAccessTokenFromRequest } from "@/lib/jwt";
 import { type NextRequest } from "next/server";
 
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
-  throw new Error("JWT_SECRET is not defined in the environment variables");
-}
-
 // Define a type for the payload of your JWT
-export interface UserPayload extends JwtPayload {
+export interface UserPayload {
   sub: string; // User ID
   email: string;
   role: string;
-  permissions?: string[]; // Optional: Include permissions in the token
+  permissions?: string[];
+  exp?: number;
+  iat?: number;
+  [key: string]: unknown;
 }
 
 // Row shape returned by `SELECT * FROM "User"`.
@@ -87,9 +86,7 @@ export async function getCurrentUser(token: string | null): Promise<
 export async function getTokenFromRequest(
   req: NextRequest
 ): Promise<string | null> {
-  const authHeader = req.headers.get("Authorization") || "";
-  const token = authHeader?.split(" ")[1] || null;
-  return token || null;
+  return getAccessTokenFromRequest(req);
 }
 
 export async function hashPassword(password: string): Promise<string> {
@@ -100,42 +97,14 @@ export async function comparePassword(password: string, hash: string): Promise<b
   return compare(password, hash);
 }
 
-export function generateToken(userId: string, email: string, role: string, permissions: string[] = []): string | null {
-  if (!JWT_SECRET) {
-    console.error("JWT_SECRET is not set, cannot generate token.");
-    return null;
-  }
-
-  const payload: UserPayload = {
-    sub: userId,
-    email,
-    role,
-    permissions, // Include permissions in the token
-    iat: Math.floor(Date.now() / 1000),
-    exp: Math.floor(Date.now() / 1000) + (60 * 60 * 24), // Token expires in 24 hours
-  };
-
-  try {
-    return jwt.sign(payload, JWT_SECRET);
-  } catch (error) {
-    console.error("Error signing JWT:", error);
-    return null;
-  }
+export function generateToken(): string | null {
+  // Removed: legacy 24h jsonwebtoken signer. Use signAccessToken/signTokenPair from "@/lib/jwt".
+  throw new Error('generateToken() was removed — use signAccessToken() from "@/lib/jwt"');
 }
 
 export async function verifyToken(token: string): Promise<UserPayload | null> {
-  if (!JWT_SECRET) {
-    console.error("JWT_SECRET is not set, cannot verify token.");
-    return null;
-  }
-
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET) as UserPayload;
-    return decoded;
-  } catch (error) {
-    console.error("Error verifying token:", error);
-    return null;
-  }
+  const payload = await verifyAccessToken(token);
+  return (payload as unknown as UserPayload) ?? null;
 }
 
 // A permission-bearing principal. Accepts both the JWT payload (which carries
@@ -173,15 +142,8 @@ export const registerSchema = z.object({
   address: z.string().optional(),
 });
 
-function verifyJWT(token: string): UserPayload | PromiseLike<UserPayload> {
-  if (!JWT_SECRET) {
-    throw new Error("JWT_SECRET is not set, cannot verify token.");
-  }
-
-  try {
-    return jwt.verify(token, JWT_SECRET) as UserPayload;
-  } catch (error) {
-    console.error("Error verifying JWT:", error);
-    throw new Error("Invalid token");
-  }
+async function verifyJWT(token: string): Promise<UserPayload> {
+  const payload = await verifyAccessToken(token);
+  if (!payload) throw new Error("Invalid token");
+  return payload as unknown as UserPayload;
 }

@@ -1,154 +1,145 @@
-import { NextResponse, NextRequest } from "next/server"
-import { sql } from "@/lib/db"
-import { withAuth } from "@/middleware/auth-middleware"
+import { NextResponse } from "next/server"
+import { withAuth, type AuthenticatedRequest, type RouteContext } from "@/middleware/auth-middleware"
+import { one, sqlWrite, audit, toNum, toIso } from "@/lib/db-helpers"
 import { emitToRoom } from "@/lib/socket-registry"
+import { z } from "zod"
 
-interface Reservation {
-  id: string
-  customer_name: string
-  phone: string
-  email: string
-  party_size: number
-  table_id: string
-  date: string
-  time: string
-  status: string
-  notes: string | null
-  updated_at: string
-  created_at: string
+type Ctx = RouteContext<{ id: string }>
+
+function shape(row: Record<string, unknown>) {
+  return {
+    ...row,
+    partySize: toNum(row.partySize),
+    date: typeof row.date === "string" ? row.date.slice(0, 10) : row.date,
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+  }
 }
 
-export const GET = withAuth(async (req: NextRequest) => {
-  const { params } = req as unknown as { params: { id: string } };
+export const GET = withAuth(async (_req: AuthenticatedRequest, { params }: Ctx) => {
   try {
-    const id = params.id
-    const reservation = (await sql`
-      SELECT * FROM reservations
-      WHERE id = ${id}
-    `) as unknown as Reservation[]
-
-    if (reservation.length === 0) {
-      return NextResponse.json({ error: "Reservation not found" }, { status: 404 })
-    }
-
-    return NextResponse.json(reservation[0])
+    const { id } = await params
+    const row = await one(`SELECT * FROM "Reservation" WHERE id = $1`, [id])
+    if (!row) return NextResponse.json({ error: "Reservation not found" }, { status: 404 })
+    return NextResponse.json(shape(row))
   } catch (error) {
-    console.error("Error fetching reservation:", error)
+    console.error("[reservations] fetch failed:", error)
     return NextResponse.json({ error: "Failed to fetch reservation" }, { status: 500 })
   }
 })
 
-interface UpdateReservationRequestBody {
-  customerName: string
-  phone: string
-  email: string
-  partySize: number
-  tableId: string
-  date: string
-  time: string
-  status: string
-  notes: string | null
+const STATUSES = ["pending", "confirmed", "seated", "completed", "cancelled", "no_show"] as const
+
+const updateSchema = z.object({
+  customerName: z.string().min(1).optional(),
+  phone: z.string().nullable().optional(),
+  email: z.string().email().nullable().optional(),
+  partySize: z.number().int().positive().optional(),
+  tableId: z.string().nullable().optional(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD").optional(),
+  time: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/, "Expected HH:MM").optional(),
+  status: z.enum(STATUSES).optional(),
+  notes: z.string().nullable().optional(),
+})
+
+/** PATCH body keys are whitelisted; see the note on inventory/[id] PATCH. */
+const PATCHABLE = updateSchema
+
+function toColumns(v: z.infer<typeof updateSchema>, startIndex: number) {
+  const columns: Record<string, unknown> = { ...v }
+  const keys = Object.keys(columns).filter((k) => columns[k] !== undefined)
+  const setClause = keys.map((k, i) => `"${k}" = $${i + startIndex}`).join(", ")
+  return { setClause, values: keys.map((k) => columns[k]), keys }
 }
 
-export const PUT = withAuth(async (req: NextRequest) => {
-  const { params } = req as unknown as { params: { id: string } };
+export const PUT = withAuth(async (req: AuthenticatedRequest, { params }: Ctx) => {
   try {
-    const id: string = params.id
-    const body: UpdateReservationRequestBody = await req.json()
-    const { customerName, phone, email, partySize, tableId, date, time, status, notes } = body
+    const { id } = await params
+    const v = updateSchema.parse(await req.json())
 
-    const result = (await sql`
-      UPDATE reservations
-      SET customer_name = ${customerName},
-          phone = ${phone},
-          email = ${email},
-          party_size = ${partySize},
-          table_id = ${tableId},
-          date = ${date},
-          time = ${time},
-          status = ${status},
-          notes = ${notes},
-          updated_at = NOW()
-      WHERE id = ${id}
-      RETURNING *
-    `) as unknown as Reservation[]
+    const existing = await one(`SELECT id FROM "Reservation" WHERE id = $1`, [id])
+    if (!existing) return NextResponse.json({ error: "Reservation not found" }, { status: 404 })
 
-    if (result.length === 0) {
-      return NextResponse.json({ error: "Reservation not found" }, { status: 404 })
-    }
+    const { setClause, values, keys } = toColumns(v, 2)
+    const rows = keys.length
+      ? await sqlWrite(
+          `UPDATE "Reservation" SET ${setClause}, "updatedAt" = NOW() WHERE id = $1 RETURNING *`,
+          [id, ...values],
+        )
+      : [existing]
 
-    const updatedReservation: Reservation = result[0]
-
-    // Emit WebSocket event for real-time updates
-    emitToRoom("global", "reservation:update", updatedReservation)
-
-    return NextResponse.json(updatedReservation)
+    const updated = shape(rows[0] ?? {})
+    emitToRoom("global", "reservation:update", updated)
+    return NextResponse.json(updated)
   } catch (error) {
-    console.error("Error updating reservation:", error)
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({ error: "Validation error", details: error.errors }, { status: 400 })
+    }
+    console.error("[reservations] update failed:", error)
     return NextResponse.json({ error: "Failed to update reservation" }, { status: 500 })
   }
 })
 
-export const PATCH = withAuth(async (req: NextRequest) => {
-  const { params } = req as unknown as { params: { id: string } };
+export const PATCH = withAuth(async (req: AuthenticatedRequest, { params }: Ctx) => {
   try {
-    const id = params.id
-    const body = await req.json()
+    const { id } = await params
+    const raw = (await req.json()) as Record<string, unknown>
+    const v = PATCHABLE.parse(raw)
 
-    // Build dynamic update query based on provided fields
-    const updates = Object.entries(body)
-      .map(([key, value]) => {
-        // Convert camelCase to snake_case for DB columns
-        const column = key.replace(/([A-Z])/g, "_$1").toLowerCase()
-        return `${column} = ${value}`
-      })
-      .join(", ")
+    const existing = await one(`SELECT id FROM "Reservation" WHERE id = $1`, [id])
+    if (!existing) return NextResponse.json({ error: "Reservation not found" }, { status: 404 })
 
-    const query = `
-      UPDATE reservations
-      SET ${updates}, updated_at = NOW()
-      WHERE id = ${id}
-      RETURNING *
-    `
-
-    const result = await sql.query(query)
-
-    if (result.length === 0) {
-      return NextResponse.json({ error: "Reservation not found" }, { status: 404 })
+    const unknownKeys = Object.keys(raw).filter((k) => !(k in PATCHABLE.shape))
+    if (unknownKeys.length > 0) {
+      return NextResponse.json(
+        { error: `Unknown field(s): ${unknownKeys.join(", ")}` },
+        { status: 400 },
+      )
     }
 
-    const updatedReservation = result[0]
+    const { setClause, values, keys } = toColumns(v, 2)
+    if (keys.length === 0) {
+      return NextResponse.json({ error: "No updatable fields provided" }, { status: 400 })
+    }
 
-    // Emit WebSocket event for real-time updates
-    emitToRoom("global", "reservation:update", updatedReservation)
+    const rows = await sqlWrite(
+      `UPDATE "Reservation" SET ${setClause}, "updatedAt" = NOW() WHERE id = $1 RETURNING *`,
+      [id, ...values],
+    )
 
-    return NextResponse.json(updatedReservation)
+    const updated = shape(rows[0] ?? {})
+    emitToRoom("global", "reservation:update", updated)
+    return NextResponse.json(updated)
   } catch (error) {
-    console.error("Error updating reservation:", error)
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({ error: "Validation error", details: error.errors }, { status: 400 })
+    }
+    console.error("[reservations] patch failed:", error)
     return NextResponse.json({ error: "Failed to update reservation" }, { status: 500 })
   }
 })
 
-interface DeleteReservationParams {
-  id: string
-}
-
-export const DELETE = withAuth(async (req: NextRequest) => {
-  const { params } = req as unknown as { params: DeleteReservationParams };
+export const DELETE = withAuth(async (req: AuthenticatedRequest, { params }: Ctx) => {
   try {
-    const id = params.id
+    const { id } = await params
+    const existing = await one(`SELECT "customerName" FROM "Reservation" WHERE id = $1`, [id])
+    if (!existing) return NextResponse.json({ error: "Reservation not found" }, { status: 404 })
 
-    await sql`
-      DELETE FROM reservations
-      WHERE id = ${id}
-    `
-
-    // Emit WebSocket event for real-time updates
+    await sqlWrite(`DELETE FROM "Reservation" WHERE id = $1`, [id])
     emitToRoom("global", "reservation:delete", { id })
+
+    await audit({
+      userId: req.user.sub,
+      action: "DELETE",
+      entity: "RESERVATION",
+      entityId: id,
+      details: { customerName: existing.customerName },
+    })
 
     return NextResponse.json({ success: true })
   } catch (error) {
-    console.error("Error deleting reservation:", error)
+    console.error("[reservations] delete failed:", error)
     return NextResponse.json({ error: "Failed to delete reservation" }, { status: 500 })
   }
 })
+

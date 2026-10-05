@@ -9,7 +9,7 @@ import {
 } from "@/kernel/types"
 import { EventStore } from "@/kernel/event-store/event-store"
 import { CURRENT_SCHEMA_VERSION, VersionedEventStore } from "@/kernel/event-store/versioned-store"
-import { CommandBus } from "@/kernel/commands/command-bus"
+import { CommandBus, IdempotencyStore } from "@/kernel/commands/command-bus"
 import { QueryBus } from "@/kernel/queries/query-bus"
 import { HookBus } from "@/kernel/hooks/hook-bus"
 import { ProjectionRegistry } from "@/kernel/projections/projection"
@@ -24,6 +24,8 @@ export interface KernelConfig {
   projections?: ProjectionRegistry
   snapshot?: SnapshotPolicy
   config?: AttributeBag
+  /** Optional idempotency store. Uses InMemoryIdempotencyStore if not provided. */
+  idempotency?: IdempotencyStore
 }
 
 export class Kernel {
@@ -61,6 +63,9 @@ export class Kernel {
       projections: this.projections,
       repository: this.repository,
     })
+    if (cfg.idempotency) {
+      this.commands.setIdempotencyStore(cfg.idempotency)
+    }
     this.queries = new QueryBus({ events: cfg.store, projections: this.projections, repository: this.repository })
     this.config = cfg.config ?? {}
   }

@@ -77,7 +77,18 @@ export type CommandResult =
       aggregateId?: Id
       events: DomainEvent[]
     }
-  | { success: false; commandId: Id; error: KernelError }
+  | {
+      success: false
+      commandId: Id
+      error: KernelError
+    }
+  | {
+      success: true
+      commandId: Id
+      queued: true
+      aggregateId?: Id
+      events: []
+    }
 
 export interface Query<TParams extends AttributeBag = AttributeBag> {
   queryType: string
@@ -96,4 +107,12 @@ export function kernelError(code: string, message: string, details?: AttributeBa
 
 export function isCommandOk(result: CommandResult): result is Extract<CommandResult, { success: true }> {
   return result.success === true
+}
+
+/**
+ * A command that was accepted while offline and durably queued.
+ * The caller must treat it as "pending sync", not as a failure.
+ */
+export function isQueued(result: CommandResult): result is Extract<CommandResult, { queued: true }> {
+  return result.success === true && "queued" in result && result.queued === true
 }

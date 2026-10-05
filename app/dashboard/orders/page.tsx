@@ -1,112 +1,244 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { useOrder } from "@/context/OrderContext"
+import { useMemo, useState } from "react"
+import Link from "next/link"
+import { useCommand, useProjection } from "@/kernel/react/kernel-provider"
+import type { OrderBoardRow, OrderBoardState } from "@/kernel/projections/orders-board"
+import {
+  PageHeader,
+  LoadingGrid,
+  EmptyState,
+  StatusBadge,
+  ConnectionPill,
+  StaleDataNotice,
+} from "@/components/pos/ui-states"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Input } from "@/components/ui/input"
-import { Button } from "@/components/ui/button"
-import { OrderCard } from "@/components/orders/order-card"
-import { Loader2, Plus, Search } from "lucide-react"
-import type { OrderStatus } from "@/types"
+import { Badge } from "@/components/ui/badge"
+import { useFeedback } from "@/lib/feedback"
+import { Search, Plus } from "lucide-react"
+
+/**
+ * The Orders screen, reading the event store rather than the legacy REST
+ * collection.
+ *
+ * This is the reference implementation of the kernel-first read path: the list
+ * is a projection (`orders.board`), so it arrives pre-joined and pre-totalled
+ * with no client-side aggregation, and every mutation is a command carrying the
+ * same invariants the kitchen, kiosk and marketplace get.
+ */
+
+const money = (n: number) => `$${n.toFixed(2)}`
+
+/**
+ * Board status → the vocabulary the rest of the app already speaks. The kernel
+ * models the lifecycle as order-level `draft|open|closed|voided`, while the UI
+ * has always grouped by fulfilment (`pending`/`preparing`/`ready`/…). Deriving
+ * the latter from the former keeps one source of truth without inventing states
+ * the domain does not have.
+ */
+function uiStatus(row: OrderBoardRow): string {
+  if (row.status === "closed") return "completed"
+  if (row.status === "voided") return "voided"
+  if (row.status === "draft") return "draft"
+  if (row.lines.some((l) => l.status === "ready")) return "ready"
+  if (row.lines.some((l) => l.status === "preparing")) return "preparing"
+  if (row.lines.some((l) => l.status === "sent")) return "pending"
+  return "served"
+}
 
 export default function OrdersPage() {
-  const { state, fetchOrders } = useOrder()
-  const [loading, setLoading] = useState(true)
-  const [searchQuery, setSearchQuery] = useState("")
-  const [statusFilter, setStatusFilter] = useState<OrderStatus | "all">("all")
+  const { state, connection } = useProjection<OrderBoardState>("orders.board", 1500)
+  const { run, pending, pendingCount } = useCommand()
+  const { notify } = useFeedback()
+  const [query, setQuery] = useState("")
+  const [tab, setTab] = useState("all")
 
-  useEffect(() => {
-    const loadData = async () => {
-      try {
-        await fetchOrders()
-      } catch (error) {
-        console.error("Error loading orders data:", error)
-      } finally {
-        setLoading(false)
-      }
+  // `state` is null until the first projection read lands, so a stable empty
+  // array is needed: `?? []` inline would hand useMemo a new reference every
+  // render and defeat its caching.
+  const rows = useMemo(() => state?.rows ?? [], [state])
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { all: rows.length }
+    for (const row of rows) {
+      const s = uiStatus(row)
+      c[s] = (c[s] ?? 0) + 1
     }
+    return c
+  }, [rows])
 
-    loadData()
-  }, [fetchOrders])
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return rows.filter((row) => {
+      if (tab !== "all" && uiStatus(row) !== tab) return false
+      if (!q) return true
+      return (
+        row.dinerName?.toLowerCase().includes(q) ||
+        row.tableId?.toLowerCase().includes(q) ||
+        row.orderId.toLowerCase().includes(q) ||
+        row.lines.some((l) => l.name.toLowerCase().includes(q))
+      )
+    })
+  }, [rows, query, tab])
 
-  const filteredOrders = state.orders.filter((order) => {
-    // Filter by status
-    if (statusFilter !== "all" && order.status !== statusFilter) {
-      return false
-    }
+  /**
+   * Send to kitchen is the one write this screen owns. No optimistic update is
+   * applied here: the projection is the source of truth, so a local guess would
+   * be overwritten by the next poll and could briefly contradict the aggregate.
+   */
+  const sendToKitchen = async (orderId: string) => {
+    const result = await run("order.sendToKitchen", { orderId })
+    if (result.success) notify("success", "Sent to kitchen")
+    else notify("error", "Could not send to kitchen", result.error?.message)
+  }
 
-    // Filter by search query (customer name or table number)
-    if (searchQuery) {
-      const searchLower = searchQuery.toLowerCase()
-      const customerNameMatch = order.customerName?.toLowerCase().includes(searchLower)
-      const tableMatch = order.table?.number?.toLowerCase().includes(searchLower)
+  if (!state) return <LoadingGrid count={6} />
 
-      if (!customerNameMatch && !tableMatch) {
-        return false
-      }
-    }
+  return (
+    <div className="space-y-4" id="orders-header">
+      <PageHeader
+        title="Orders"
+        subtitle={`${rows.length} tracked ${rows.length === 1 ? "check" : "checks"}`}
+        live={connection === "live"}
+        actions={
+          <>
+            <ConnectionPill state={connection} />
+            {pendingCount > 0 && (
+              <Badge variant="offline" title="Queued changes waiting for a connection">
+                {pendingCount} queued
+              </Badge>
+            )}
+            <Button disabled={pending} id="create-order-button">
+              <Plus className="mr-2 h-4 w-4" /> New Order
+            </Button>
+          </>
+        }
+      />
 
-    return true
-  })
+      {connection === "offline" && rows.length > 0 && <StaleDataNotice />}
 
-  if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      <div className="relative">
+        <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+        <Input
+          type="search"
+          placeholder="Search by diner, table or item..."
+          className="pl-8"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label="Search orders"
+        />
       </div>
+
+      <Tabs value={tab} onValueChange={setTab} id="order-filters">
+        <TabsList className="mb-4 flex-wrap">
+          <TabsTrigger value="all">All ({counts.all ?? 0})</TabsTrigger>
+          <TabsTrigger value="pending">Pending ({counts.pending ?? 0})</TabsTrigger>
+          <TabsTrigger value="preparing">Preparing ({counts.preparing ?? 0})</TabsTrigger>
+          <TabsTrigger value="ready">Ready ({counts.ready ?? 0})</TabsTrigger>
+          <TabsTrigger value="completed">Completed ({counts.completed ?? 0})</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value={tab} className="space-y-4">
+          <OrdersGrid rows={visible} pending={pending} onSend={sendToKitchen} query={query} />
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}
+
+
+
+/**
+ * Card grid + empty state, split out so the page body stays readable and the
+ * list can be reused by the order-detail sidebar later.
+ */
+function OrdersGrid({
+  rows,
+  pending,
+  onSend,
+  query,
+}: {
+  rows: OrderBoardRow[]
+  pending: boolean
+  onSend: (orderId: string) => void
+  query: string
+}) {
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        title={query ? "No matching orders" : "No checks yet"}
+        hint={
+          query
+            ? "Try a different name, table or item."
+            : "Checks appear here the moment a server rings one in."
+        }
+      />
     )
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-3xl font-bold tracking-tight">Orders</h2>
-        <Button>
-          <Plus className="mr-2 h-4 w-4" /> New Order
-        </Button>
-      </div>
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+      {rows.map((row) => {
+        const unsent = row.lines.filter((l) => l.status === "open").length
+        const settled = row.status === "closed" || row.status === "voided"
+        return (
+          <Card key={row.orderId} className="pos-card-hover">
+            <CardContent className="space-y-3 p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="truncate font-semibold">
+                    {row.dinerName ?? (row.tableId ? `Table ${row.tableId}` : "Walk-in")}
+                  </p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {row.lines.length} {row.lines.length === 1 ? "item" : "items"} · {row.channel}
+                  </p>
+                </div>
+                <StatusBadge value={uiStatus(row)} kind="order" />
+              </div>
 
-      <div className="flex items-center space-x-2">
-        <div className="relative flex-1">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input
-            type="search"
-            placeholder="Search by customer or table..."
-            className="pl-8"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-        </div>
-      </div>
+              <ul className="space-y-1 text-sm">
+                {row.lines.slice(0, 4).map((line) => (
+                  <li key={line.lineId} className="flex items-baseline justify-between gap-2">
+                    <span className="min-w-0 truncate text-muted-foreground">
+                      <span className="font-medium text-foreground">{line.quantity}×</span> {line.name}
+                      {line.modifiers.length > 0 && (
+                        <span className="text-xs"> ({line.modifiers.join(", ")})</span>
+                      )}
+                    </span>
+                    <span className="shrink-0 tabular-nums text-xs">{money(line.lineTotal)}</span>
+                  </li>
+                ))}
+                {row.lines.length > 4 && (
+                  <li className="text-xs text-muted-foreground">+{row.lines.length - 4} more</li>
+                )}
+              </ul>
 
-      <Tabs defaultValue="all" onValueChange={(value) => setStatusFilter(value as OrderStatus | "all")}>
-        <TabsList className="mb-4">
-          <TabsTrigger value="all">All Orders</TabsTrigger>
-          <TabsTrigger value="pending">Pending</TabsTrigger>
-          <TabsTrigger value="preparing">Preparing</TabsTrigger>
-          <TabsTrigger value="ready">Ready</TabsTrigger>
-          <TabsTrigger value="delivered">Delivered</TabsTrigger>
-          <TabsTrigger value="completed">Completed</TabsTrigger>
-          <TabsTrigger value="cancelled">Cancelled</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value={statusFilter} className="space-y-4">
-          {filteredOrders.length > 0 ? (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {filteredOrders.map((order) => (
-                <OrderCard key={order.id} order={order} />
-              ))}
-            </div>
-          ) : (
-            <Card>
-              <CardContent className="flex h-40 items-center justify-center">
-                <p className="text-muted-foreground">No orders found</p>
-              </CardContent>
-            </Card>
-          )}
-        </TabsContent>
-      </Tabs>
+              <div className="flex items-center justify-between border-t pt-3">
+                <div className="text-sm">
+                  <span className="text-muted-foreground">Total </span>
+                  <span className="font-semibold tabular-nums">{money(row.total)}</span>
+                  {row.balanceDue > 0.004 && (
+                    <span className="ml-2 text-xs text-status-dirty">{money(row.balanceDue)} due</span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" asChild>
+                    <Link href={`/dashboard/orders/${row.orderId}`}>View</Link>
+                  </Button>
+                  {unsent > 0 && !settled && (
+                    <Button size="sm" disabled={pending} onClick={() => onSend(row.orderId)}>
+                      Send {unsent}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )
+      })}
     </div>
   )
 }

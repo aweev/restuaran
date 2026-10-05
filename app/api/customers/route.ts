@@ -1,34 +1,28 @@
-import { type NextRequest as BaseNextRequest, NextResponse } from "next/server"
-
-interface NextRequest extends BaseNextRequest {
-  user?: {
-    sub: string
-    email: string
-    role: string
-  }
-}
-import prisma from "@/lib/prisma"
-import { withAuth } from "@/middleware/auth-middleware"
+import { NextResponse } from "next/server"
+import { withAuth, type AuthenticatedRequest } from "@/middleware/auth-middleware"
+import { sqlWrite, audit, toNum, toIso } from "@/lib/db-helpers"
 import { z } from "zod"
 
-// GET - Fetch all customers
+function shape(row: Record<string, unknown>) {
+  return {
+    ...row,
+    visitCount: toNum(row.visitCount),
+    totalSpent: toNum(row.totalSpent),
+    lastVisit: toIso(row.lastVisit),
+  }
+}
+
 export const GET = withAuth(async () => {
   try {
-    const customers = await prisma.customer.findMany({
-      orderBy: {
-        name: "asc",
-      },
-    })
-
-    return NextResponse.json(customers)
+    const rows = await sqlWrite(`SELECT * FROM "Customer" ORDER BY LOWER(name) ASC`)
+    return NextResponse.json(rows.map(shape))
   } catch (error) {
-    console.error("Error fetching customers:", error)
+    console.error("[customers] list failed:", error)
     return NextResponse.json({ error: "Failed to fetch customers" }, { status: 500 })
   }
 })
 
-// Schema for creating customers
-const createCustomerSchema = z.object({
+const createSchema = z.object({
   name: z.string().min(1, "Customer name is required"),
   email: z.string().email().optional().nullable(),
   phone: z.string().optional().nullable(),
@@ -42,54 +36,40 @@ const createCustomerSchema = z.object({
   totalSpent: z.number().min(0).optional(),
 })
 
-// POST - Create a new customer
-export const POST = withAuth(async (req: NextRequest) => {
+export const POST = withAuth(async (req: AuthenticatedRequest) => {
   try {
-    const body = await req.json()
+    const v = createSchema.parse(await req.json())
+    const id = crypto.randomUUID()
 
-    // Validate request body
-    const validatedData = createCustomerSchema.parse(body)
+    const rows = await sqlWrite(
+      `INSERT INTO "Customer"
+         (id, name, email, phone, notes, allergies, "dietaryRestrictions", "favoriteItems",
+          "seatingPreferences", "visitCount", "lastVisit", "totalSpent", "userId")
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       RETURNING *`,
+      [
+        id, v.name, v.email ?? null, v.phone ?? null, v.notes ?? null, v.allergies ?? null,
+        v.dietaryRestrictions ?? null, v.favoriteItems ?? null, v.seatingPreferences ?? null,
+        v.visitCount ?? 0, v.lastVisit ? new Date(v.lastVisit) : null, v.totalSpent ?? 0,
+        req.user.sub,
+      ],
+    )
 
-    // Create customer
-    const customer = await prisma.customer.create({
-      data: {
-        name: validatedData.name,
-        email: validatedData.email || null,
-        phone: validatedData.phone || null,
-        notes: validatedData.notes || null,
-        allergies: validatedData.allergies || null,
-        dietaryRestrictions: validatedData.dietaryRestrictions || null,
-        favoriteItems: validatedData.favoriteItems || null,
-        seatingPreferences: validatedData.seatingPreferences || null,
-        visitCount: validatedData.visitCount || 0,
-        lastVisit: validatedData.lastVisit ? new Date(validatedData.lastVisit) : null,
-        totalSpent: validatedData.totalSpent || 0,
-        userId: req.user?.sub || "unknown",
-      },
+    await audit({
+      userId: req.user.sub,
+      action: "CREATE",
+      entity: "CUSTOMER",
+      entityId: id,
+      details: { name: v.name, email: v.email },
     })
 
-    // Log the action
-    await prisma.auditLog.create({
-      data: {
-        userId: req.user?.sub || "unknown",
-        action: "CREATE",
-        entity: "CUSTOMER",
-        entityId: customer.id,
-        details: {
-          name: customer.name,
-          email: customer.email,
-        },
-      },
-    })
-
-    return NextResponse.json(customer, { status: 201 })
+    return NextResponse.json(shape(rows[0] ?? {}), { status: 201 })
   } catch (error) {
-    console.error("Error creating customer:", error)
-
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: "Validation error", details: error.errors }, { status: 400 })
     }
-
+    console.error("[customers] create failed:", error)
     return NextResponse.json({ error: "Failed to create customer" }, { status: 500 })
   }
 })
+

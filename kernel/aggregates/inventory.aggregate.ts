@@ -11,6 +11,10 @@ export interface InventoryState extends AttributeBag {
   unitCost: number
   vendorId: Id | null
   wastageTotal: number
+  /** Merchandising grouping for the stock screens; empty when uncategorised. */
+  category: string
+  /** Soft-delete flag: inactive items stay in history but leave the boards. */
+  isActive: boolean
 }
 
 export class InventoryItemAggregate extends Aggregate<InventoryState> {
@@ -27,6 +31,8 @@ export class InventoryItemAggregate extends Aggregate<InventoryState> {
       unitCost: 0,
       vendorId: null,
       wastageTotal: 0,
+      category: "",
+      isActive: true,
     })
   }
 
@@ -38,10 +44,12 @@ export class InventoryItemAggregate extends Aggregate<InventoryState> {
     reorderPoint?: number
     unitCost?: number
     vendorId?: Id
+    category?: string
     actor: ActorContext
   }): InventoryItemAggregate {
     const agg = new InventoryItemAggregate(tenant)
     agg.initialize(opts.id)
+    if (!opts.name?.trim()) throw kernelError("INVALID_ITEM", "Item name is required")
     agg.raise("inventory.itemDefined", {
       sku: opts.sku,
       name: opts.name,
@@ -49,6 +57,8 @@ export class InventoryItemAggregate extends Aggregate<InventoryState> {
       reorderPoint: opts.reorderPoint ?? 0,
       unitCost: opts.unitCost ?? 0,
       vendorId: opts.vendorId ?? null,
+      category: opts.category ?? "",
+      isActive: true,
     }, opts.actor)
     return agg
   }
@@ -74,6 +84,35 @@ export class InventoryItemAggregate extends Aggregate<InventoryState> {
     this.raise("inventory.adjusted", { delta, reason, target: counted }, actor)
   }
 
+  /**
+   * Edit item metadata without touching stock. Stock moves through
+   * receive/consume/waste/adjust so every unit stays accountable.
+   */
+  updateDetails(actor: ActorContext, patch: {
+    name?: string
+    unit?: string
+    reorderPoint?: number
+    unitCost?: number
+    category?: string
+    vendorId?: Id | null
+    isActive?: boolean
+  }): void {
+    if (patch.name !== undefined && !patch.name.trim()) {
+      throw kernelError("INVALID_ITEM", "Item name is required")
+    }
+    if (patch.reorderPoint !== undefined && patch.reorderPoint < 0) {
+      throw kernelError("INVALID_ITEM", "Reorder point cannot be negative")
+    }
+    if (patch.unitCost !== undefined && patch.unitCost < 0) {
+      throw kernelError("INVALID_ITEM", "Unit cost cannot be negative")
+    }
+    this.raise("inventory.itemUpdated", { ...patch }, actor)
+  }
+
+  setActive(actor: ActorContext, isActive: boolean): void {
+    this.raise("inventory.itemUpdated", { isActive }, actor)
+  }
+
   available(): number {
     return this.state.onHand - this.state.reserved
   }
@@ -82,6 +121,7 @@ export class InventoryItemAggregate extends Aggregate<InventoryState> {
     const s = this.state
     switch (event.eventType) {
       case "inventory.itemDefined":
+      case "inventory.itemUpdated":
         return { ...s, ...event.payload }
       case "inventory.received":
         return { ...s, onHand: s.onHand + Number(event.payload.delta) }

@@ -1,0 +1,105 @@
+
+> pos@0.1.0 build
+> next build
+
+   ▲ Next.js 15.2.4
+   - Environments: .env.local, .env
+   - Experiments (use with caution):
+     · cpus: 1
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (0/60) ...
+   Generating static pages (15/60) 
+   Generating static pages (30/60) 
+   Generating static pages (45/60) 
+ ✓ Generating static pages (60/60)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                                     Size  First Load JS
+┌ ○ /                                        1.29 kB         105 kB
+├ ○ /_not-found                                281 B         102 kB
+├ ƒ /api/auth/change-password                  281 B         102 kB
+├ ƒ /api/auth/forgot-password                  281 B         102 kB
+├ ƒ /api/auth/login                            281 B         102 kB
+├ ƒ /api/auth/me                               281 B         102 kB
+├ ƒ /api/auth/register                         281 B         102 kB
+├ ƒ /api/auth/reset-password                   281 B         102 kB
+├ ƒ /api/customer/feedback                     281 B         102 kB
+├ ƒ /api/customer/loyalty/[id]                 281 B         102 kB
+├ ƒ /api/customer/loyalty/login                281 B         102 kB
+├ ƒ /api/customer/loyalty/redeem               281 B         102 kB
+├ ƒ /api/customer/loyalty/rewards              281 B         102 kB
+├ ƒ /api/customer/loyalty/signup               281 B         102 kB
+├ ƒ /api/customer/orders                       281 B         102 kB
+├ ƒ /api/customer/orders/[id]                  281 B         102 kB
+├ ƒ /api/customer/orders/[id]/delivery         281 B         102 kB
+├ ƒ /api/customer/recommendations              281 B         102 kB
+├ ƒ /api/customer/recommendations/popular      281 B         102 kB
+├ ƒ /api/customers                             281 B         102 kB
+├ ƒ /api/customers/[id]                        281 B         102 kB
+├ ƒ /api/customers/search                      281 B         102 kB
+├ ƒ /api/inventory                             281 B         102 kB
+├ ƒ /api/inventory/[id]                        281 B         102 kB
+├ ƒ /api/kernel                                281 B         102 kB
+├ ƒ /api/kitchen/preparation-times             281 B         102 kB
+├ ƒ /api/kitchen/staff-assignments             281 B         102 kB
+├ ƒ /api/kitchen/staff-assignments/[userId]    281 B         102 kB
+├ ƒ /api/menu                                  281 B         102 kB
+├ ƒ /api/menu/[id]                             281 B         102 kB
+├ ƒ /api/orders                                281 B         102 kB
+├ ƒ /api/orders/[id]                           281 B         102 kB
+├ ƒ /api/orders/[id]/payments                  281 B         102 kB
+├ ƒ /api/reservations                          281 B         102 kB
+├ ƒ /api/reservations/[id]                     281 B         102 kB
+├ ƒ /api/socket                                281 B         102 kB
+├ ƒ /api/tables                                281 B         102 kB
+├ ƒ /api/tables/[id]                           281 B         102 kB
+├ ƒ /api/v1/commands                           281 B         102 kB
+├ ƒ /api/v1/meta                               281 B         102 kB
+├ ƒ /api/v1/queries                            281 B         102 kB
+├ ƒ /api/waitlist                              281 B         102 kB
+├ ƒ /api/waitlist/[id]                         281 B         102 kB
+├ ƒ /api/waitlist/[id]/notify                  281 B         102 kB
+├ ƒ /api/waitlist/[id]/seat                    281 B         102 kB
+├ ○ /customer                                7.57 kB         145 kB
+├ ○ /customer/cart                           7.75 kB         132 kB
+├ ○ /customer/feedback                       9.13 kB         125 kB
+├ ○ /customer/feedback/thank-you             2.98 kB         117 kB
+├ ○ /customer/loyalty                        8.59 kB         128 kB
+├ ○ /customer/menu                           5.68 kB         154 kB
+├ ○ /customer/order-tracking                 6.06 kB         120 kB
+├ ○ /dashboard                               5.63 kB         246 kB
+├ ○ /dashboard/analytics                     10.4 kB         428 kB
+├ ○ /dashboard/inventory                     13.3 kB         282 kB
+├ ○ /dashboard/kitchen                        3.9 kB         147 kB
+├ ○ /dashboard/kitchen/display               12.3 kB         319 kB
+├ ○ /dashboard/menu                          6.51 kB         125 kB
+├ ○ /dashboard/orders                        5.07 kB         137 kB
+├ ƒ /dashboard/orders/[id]                     11 kB         157 kB
+├ ○ /dashboard/orders/new                    12.5 kB         157 kB
+├ ○ /dashboard/reports                       7.08 kB         295 kB
+├ ○ /dashboard/reservations                  5.46 kB         207 kB
+├ ○ /dashboard/settings                      4.35 kB         137 kB
+├ ○ /dashboard/staff                         8.56 kB         164 kB
+├ ○ /dashboard/tables                        9.07 kB         148 kB
+├ ○ /dashboard/tables/management             17.2 kB         206 kB
+├ ○ /forgot-password                         3.36 kB         119 kB
+├ ○ /login                                   3.55 kB         116 kB
+├ ○ /offline                                 1.89 kB         116 kB
+├ ○ /profile                                 6.19 kB         125 kB
+├ ○ /register                                4.11 kB         147 kB
+└ ƒ /reset-password/[token]                   3.3 kB         119 kB
++ First Load JS shared by all                 101 kB
+  ├ chunks/1684-3c4c2fa06194cc78.js          45.8 kB
+  ├ chunks/4bd1b696-4f8b7528612a8def.js      53.3 kB
+  └ other shared chunks (total)              2.24 kB
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+EXIT=0  

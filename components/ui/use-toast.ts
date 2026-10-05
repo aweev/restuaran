@@ -140,6 +140,23 @@ function dispatch(action: Action) {
 
 type Toast = Omit<ToasterToast, "id">
 
+// Compat shim: the app mounts only the Sonner toaster (see app/layout.tsx), so
+// legacy `toast({ title, description, variant })` calls are forwarded to sonner.
+// This keeps ~100 existing call sites working without a flag-day rewrite.
+async function sonnerCompat(props: Toast) {
+  try {
+    const { toast: sonner } = await import("sonner")
+    const title = typeof props.title === "string" ? props.title : "Notice"
+    const description =
+      typeof props.description === "string" ? props.description : undefined
+    const message = description ? `${title} — ${description}` : title
+    if (props.variant === "destructive") sonner.error(title, { description })
+    else sonner(message)
+  } catch {
+    /* toast is best-effort */
+  }
+}
+
 function toast({ ...props }: Toast) {
   const id = genId()
 
@@ -161,6 +178,7 @@ function toast({ ...props }: Toast) {
       },
     },
   })
+  void sonnerCompat(props)
 
   return {
     id: id,

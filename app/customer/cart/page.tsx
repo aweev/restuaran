@@ -15,6 +15,7 @@ import { CustomerFooter } from "@/components/customer/customer-footer"
 import { CustomerCartItem } from "@/components/customer/customer-cart-item"
 import { Loader2, Trash2, ShoppingCart } from "lucide-react"
 import type { CartItem, DiningMode } from "@/types"
+import { getVenueSettings } from "@/lib/settings"
 import Link from "next/link"
 
 interface CustomerCart {
@@ -75,9 +76,10 @@ export default function CustomerCartPage() {
   const handleRemoveItem = (itemId: string) => {
     const updatedItems = cart.items.filter((item) => item.id !== itemId)
 
-    // Recalculate totals
+    // Client-side estimate only. The authoritative tax is applied server-side
+    // (kernel order.applyTax reads the venue rate); the receipt total wins.
     const subtotal = updatedItems.reduce((sum, item) => sum + item.totalPrice, 0)
-    const tax = subtotal * 0.05 // 5% tax
+    const tax = subtotal * getVenueSettings().taxRate
     const total = subtotal + tax
 
     const updatedCart = {
@@ -114,9 +116,9 @@ export default function CustomerCartPage() {
       return item
     })
 
-    // Recalculate totals
+    // Client-side estimate only (see handleRemoveItem).
     const subtotal = updatedItems.reduce((sum, item) => sum + item.totalPrice, 0)
-    const tax = subtotal * 0.05 // 5% tax
+    const tax = subtotal * getVenueSettings().taxRate
     const total = subtotal + tax
 
     const updatedCart = {
@@ -311,13 +313,14 @@ export default function CustomerCartPage() {
                       <span>Subtotal</span>
                       <span>${cart.subtotal.toFixed(2)}</span>
                     </div>
-                    <div className="flex justify-between">
-                      <span>Tax (5%)</span>
+                    <div className="flex justify-between text-muted-foreground">
+                      <span>Estimated tax ({(getVenueSettings().taxRate * 100).toFixed(1)}%)</span>
                       <span>${cart.tax.toFixed(2)}</span>
                     </div>
+                    <p className="text-xs text-muted-foreground">Final tax is calculated server-side at checkout.</p>
                     <Separator className="my-2" />
                     <div className="flex justify-between font-bold">
-                      <span>Total</span>
+                      <span>Estimated total</span>
                       <span>${cart.total.toFixed(2)}</span>
                     </div>
                   </div>

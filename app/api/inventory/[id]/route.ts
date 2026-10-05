@@ -1,125 +1,148 @@
-import { NextResponse, NextRequest } from "next/server"
-import { sql } from "@/lib/db"
-import { withAuth } from "@/middleware/auth-middleware"
+import { NextResponse } from "next/server"
+import { withAuth, type AuthenticatedRequest, type RouteContext } from "@/middleware/auth-middleware"
+import { one, sqlWrite, audit, toNum } from "@/lib/db-helpers"
+import { z } from "zod"
 
-export const GET = withAuth(async (req: NextRequest) => {
-  const { params } = req as unknown as { params: { id: string } };
+type Ctx = RouteContext<{ id: string }>
+
+function shape(row: Record<string, unknown>) {
+  return {
+    ...row,
+    currentStock: toNum(row.currentStock),
+    reorderLevel: toNum(row.reorderLevel),
+    unitCost: toNum(row.unitCost),
+  }
+}
+
+export const GET = withAuth(async (_req: AuthenticatedRequest, { params }: Ctx) => {
   try {
-    const id = params.id
-    const ingredient = await sql`
-      SELECT * FROM ingredients
-      WHERE id = ${id}
-    `
-
-    if (ingredient.length === 0) {
-      return NextResponse.json({ error: "Ingredient not found" }, { status: 404 })
-    }
-
-    return NextResponse.json(ingredient[0])
+    const { id } = await params
+    const row = await one(`SELECT * FROM "Ingredient" WHERE id = $1`, [id])
+    if (!row) return NextResponse.json({ error: "Ingredient not found" }, { status: 404 })
+    return NextResponse.json(shape(row))
   } catch (error) {
-    console.error("Error fetching ingredient:", error)
+    console.error("[inventory] fetch failed:", error)
     return NextResponse.json({ error: "Failed to fetch ingredient" }, { status: 500 })
   }
 })
 
-interface IngredientUpdateBody {
-  name: string
-  category: string
-  unit: string
-  currentStock: number
-  reorderLevel: number
-  unitCost: number
-  isActive: boolean
-}
+const updateSchema = z.object({
+  name: z.string().min(1).optional(),
+  category: z.string().min(1).optional(),
+  unit: z.string().min(1).optional(),
+  currentStock: z.number().min(0).optional(),
+  reorderLevel: z.number().min(0).optional(),
+  unitCost: z.number().min(0).optional(),
+  isActive: z.boolean().optional(),
+})
 
-interface Params {
-  id: string
-}
-
-export const PUT = withAuth(async (req: NextRequest) => {
-  const { params } = req as unknown as { params: Params };
+export const PUT = withAuth(async (req: AuthenticatedRequest, { params }: Ctx) => {
   try {
-    const id = params.id
-    const body: IngredientUpdateBody = await req.json()
-    const { name, category, unit, currentStock, reorderLevel, unitCost, isActive } = body
+    const { id } = await params
+    const v = updateSchema.parse(await req.json())
 
-    const result = await sql`
-      UPDATE ingredients
-      SET name = ${name},
-          category = ${category},
-          unit = ${unit},
-          current_stock = ${currentStock},
-          reorder_level = ${reorderLevel},
-          unit_cost = ${unitCost},
-          is_active = ${isActive},
-          updated_at = NOW()
-      WHERE id = ${id}
-      RETURNING *
-    `
+    const existing = await one(`SELECT id FROM "Ingredient" WHERE id = $1`, [id])
+    if (!existing) return NextResponse.json({ error: "Ingredient not found" }, { status: 404 })
 
-    if (result.length === 0) {
-      return NextResponse.json({ error: "Ingredient not found" }, { status: 404 })
+    const columns: Record<string, unknown> = { ...v }
+    const keys = Object.keys(columns).filter((k) => columns[k] !== undefined)
+    if (keys.length > 0) {
+      const setClause = keys.map((k, i) => `"${k}" = $${i + 2}`).join(", ")
+      await sqlWrite(
+        `UPDATE "Ingredient" SET ${setClause}, "updatedAt" = NOW() WHERE id = $1`,
+        [id, ...keys.map((k) => columns[k])],
+      )
     }
 
-    return NextResponse.json(result[0])
+    const row = await one(`SELECT * FROM "Ingredient" WHERE id = $1`, [id])
+    return NextResponse.json(shape(row ?? {}))
   } catch (error) {
-    console.error("Error updating ingredient:", error)
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({ error: "Validation error", details: error.errors }, { status: 400 })
+    }
+    console.error("[inventory] update failed:", error)
     return NextResponse.json({ error: "Failed to update ingredient" }, { status: 500 })
   }
 })
 
-export const PATCH = withAuth(async (req: NextRequest) => {
-  const { params } = req as unknown as { params: Params };
+/**
+ * PATCH accepts a partial body and builds its SET clause from a *whitelist*.
+ *
+ * The previous implementation did `${column} = ${value}` with the column name
+ * derived from the body key and the value interpolated raw into the SQL string —
+ * both halves were attacker-controlled, so this endpoint was directly
+ * injectable. Column names can never be parameterised, so they must be selected
+ * from a fixed set; values are always bound.
+ */
+const PATCHABLE = updateSchema
+
+export const PATCH = withAuth(async (req: AuthenticatedRequest, { params }: Ctx) => {
   try {
-    const id: string = params.id
-    const body: Partial<IngredientUpdateBody> = await req.json()
+    const { id } = await params
+    const raw = (await req.json()) as Record<string, unknown>
+    const v = PATCHABLE.parse(raw)
 
-    // Build dynamic update query based on provided fields
-    const updates: string = Object.entries(body)
-      .map(([key, value]) => {
-        // Convert camelCase to snake_case for DB columns
-        const column: string = key.replace(/([A-Z])/g, "_$1").toLowerCase()
-        return `${column} = ${value}`
-      })
-      .join(", ")
+    const existing = await one(`SELECT id FROM "Ingredient" WHERE id = $1`, [id])
+    if (!existing) return NextResponse.json({ error: "Ingredient not found" }, { status: 404 })
 
-    const query: string = `
-      UPDATE ingredients
-      SET ${updates}, updated_at = NOW()
-      WHERE id = ${id}
-      RETURNING *
-    `
-
-    const result: unknown[] = await sql.query(query)
-
-    if (result.length === 0) {
-      return NextResponse.json({ error: "Ingredient not found" }, { status: 404 })
+    // Reject unknown keys rather than silently ignoring them.
+    const unknownKeys = Object.keys(raw).filter((k) => !(k in PATCHABLE.shape))
+    if (unknownKeys.length > 0) {
+      return NextResponse.json(
+        { error: `Unknown field(s): ${unknownKeys.join(", ")}` },
+        { status: 400 },
+      )
     }
 
-    return NextResponse.json(result[0])
+    const columns: Record<string, unknown> = { ...v }
+    const keys = Object.keys(columns).filter((k) => columns[k] !== undefined)
+    if (keys.length === 0) {
+      return NextResponse.json({ error: "No updatable fields provided" }, { status: 400 })
+    }
+
+    const setClause = keys.map((k, i) => `"${k}" = $${i + 2}`).join(", ")
+    const rows = await sqlWrite(
+      `UPDATE "Ingredient" SET ${setClause}, "updatedAt" = NOW() WHERE id = $1 RETURNING *`,
+      [id, ...keys.map((k) => columns[k])],
+    )
+
+    await audit({
+      userId: req.user.sub,
+      action: "UPDATE",
+      entity: "INGREDIENT",
+      entityId: id,
+      details: { fields: keys },
+    })
+
+    return NextResponse.json(shape(rows[0] ?? {}))
   } catch (error) {
-    console.error("Error updating ingredient:", error)
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({ error: "Validation error", details: error.errors }, { status: 400 })
+    }
+    console.error("[inventory] patch failed:", error)
     return NextResponse.json({ error: "Failed to update ingredient" }, { status: 500 })
   }
 })
 
-interface DeleteParams {
-  id: string
-}
-
-export const DELETE = withAuth(async (req: NextRequest) => {
+export const DELETE = withAuth(async (req: AuthenticatedRequest, { params }: Ctx) => {
   try {
-    const { params } = req as unknown as { params: DeleteParams };
-    const id: string = params.id;
+    const { id } = await params
+    const existing = await one(`SELECT name FROM "Ingredient" WHERE id = $1`, [id])
+    if (!existing) return NextResponse.json({ error: "Ingredient not found" }, { status: 404 })
 
-    await sql`
-      DELETE FROM ingredients
-      WHERE id = ${id}
-    `;
+    await sqlWrite(`DELETE FROM "Ingredient" WHERE id = $1`, [id])
+    await audit({
+      userId: req.user.sub,
+      action: "DELETE",
+      entity: "INGREDIENT",
+      entityId: id,
+      details: { name: existing.name },
+    })
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true })
   } catch (error) {
-    console.error("Error deleting ingredient:", error);
-    return NextResponse.json({ error: "Failed to delete ingredient" }, { status: 500 });
+    console.error("[inventory] delete failed:", error)
+    return NextResponse.json({ error: "Failed to delete ingredient" }, { status: 500 })
   }
-});
+})
+

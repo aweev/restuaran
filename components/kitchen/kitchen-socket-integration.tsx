@@ -26,9 +26,9 @@ export function KitchenSocketIntegration() {
 
   // Initialize socket when component mounts
   useEffect(() => {
-    if (authState.isAuthenticated && authState.token) {
+    if (authState.isAuthenticated && authState.accessToken) {
       // Connecting the socket is a side effect of the lib; the instance itself is not needed here.
-      initializeSocket(authState.token)
+      initializeSocket(authState.accessToken)
 
       // Join the kitchen room
       joinRoom("kitchen")
@@ -38,7 +38,7 @@ export function KitchenSocketIntegration() {
         leaveRoom("kitchen")
       }
     }
-  }, [authState.isAuthenticated, authState.token])
+  }, [authState.isAuthenticated, authState.accessToken])
 
   // Listen for order events
   const events = useSocketEvents(["order:new", "order:update", "order:cancelled", "order:expedite"])

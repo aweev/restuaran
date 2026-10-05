@@ -129,6 +129,13 @@ export interface TableBoardRow {
   serverId: Id | null
   currentOrderId: Id | null
   seatedAt: string | null
+  /** Floor-plan placement. Null until a manager positions the table. */
+  x: number | null
+  y: number | null
+  width: number
+  height: number
+  shape: "round" | "square" | "rect"
+  zone: string
 }
 
 export interface TableBoardState extends AttributeBag {
@@ -147,13 +154,16 @@ export function tableBoardProjection(store: EventStore, tenant: TenantContext): 
         "table.cleaned",
         "table.reserved",
         "table.reservationReleased",
+        "table.outOfService",
+        "table.returnedToService",
+        "table.repositioned",
       ],
       reduce: (state, event): TableBoardState => {
         const rows = [...state.rows]
         const idx = rows.findIndex((r) => r.tableId === event.aggregateId)
         const p = event.payload as Record<string, unknown>
         const base: TableBoardRow =
-          idx >= 0 ? rows[idx] : { tableId: event.aggregateId, label: "?", capacity: 0, floor: "main", status: "available", serverId: null, currentOrderId: null, seatedAt: null }
+          idx >= 0 ? rows[idx] : { tableId: event.aggregateId, label: "?", capacity: 0, floor: "main", status: "available", serverId: null, currentOrderId: null, seatedAt: null, x: null, y: null, width: 80, height: 80, shape: "round", zone: "main" }
         const next: TableBoardRow = { ...base }
         switch (event.eventType) {
           case "table.created":
@@ -182,6 +192,20 @@ export function tableBoardProjection(store: EventStore, tenant: TenantContext): 
           case "table.reservationReleased":
             next.status = "available"
             break
+          case "table.outOfService":
+            next.status = "out_of_service"
+            break
+          case "table.returnedToService":
+            next.status = "available"
+            break
+          case "table.repositioned":
+            next.x = (p.x as number) ?? null
+            next.y = (p.y as number) ?? null
+            next.width = Number(p.width ?? next.width)
+            next.height = Number(p.height ?? next.height)
+            next.shape = (p.shape as TableBoardRow["shape"]) ?? next.shape
+            next.zone = String(p.zone ?? next.zone)
+            break
         }
         if (idx >= 0) rows[idx] = next
         else rows.push(next)
@@ -201,8 +225,10 @@ export interface InventoryRow {
   onHand: number
   available: number
   reorderPoint: number
+  unitCost: number
+  category: string
+  isActive: boolean
 }
-
 export interface InventoryBoardState extends AttributeBag {
   rows: InventoryRow[]
 }
@@ -218,6 +244,7 @@ export function inventoryBoardProjection(store: EventStore, tenant: TenantContex
         "inventory.consumed",
         "inventory.wasted",
         "inventory.adjusted",
+        "inventory.itemUpdated",
       ],
       reduce: (state, event): InventoryBoardState => {
         const rows = [...state.rows]
@@ -226,7 +253,7 @@ export function inventoryBoardProjection(store: EventStore, tenant: TenantContex
         const base: InventoryRow =
           idx >= 0
             ? rows[idx]
-            : { itemId: event.aggregateId, sku: "", name: "", unit: "ea", onHand: 0, available: 0, reorderPoint: 0 }
+            : { itemId: event.aggregateId, sku: "", name: "", unit: "ea", onHand: 0, available: 0, reorderPoint: 0, unitCost: 0, category: "", isActive: true }
         const next: InventoryRow = { ...base }
         switch (event.eventType) {
           case "inventory.itemDefined":
@@ -234,6 +261,17 @@ export function inventoryBoardProjection(store: EventStore, tenant: TenantContex
             next.name = String(p.name ?? "")
             next.unit = String(p.unit ?? "ea")
             next.reorderPoint = Number(p.reorderPoint ?? 0)
+            next.unitCost = Number(p.unitCost ?? 0)
+            next.category = String(p.category ?? "")
+            next.isActive = p.isActive !== undefined ? Boolean(p.isActive) : true
+            break
+          case "inventory.itemUpdated":
+            if (p.name !== undefined) next.name = String(p.name)
+            if (p.unit !== undefined) next.unit = String(p.unit)
+            if (p.reorderPoint !== undefined) next.reorderPoint = Number(p.reorderPoint)
+            if (p.unitCost !== undefined) next.unitCost = Number(p.unitCost)
+            if (p.category !== undefined) next.category = String(p.category)
+            if (p.isActive !== undefined) next.isActive = Boolean(p.isActive)
             break
           case "inventory.received":
             next.onHand += Number(p.delta ?? 0)

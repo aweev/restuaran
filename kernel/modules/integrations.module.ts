@@ -22,7 +22,7 @@ import {
   RetryPolicy,
 } from "@/kernel/integrations/outbound-queue"
 import { RosModule, ModuleRuntime } from "@/kernel/modules/module-registry"
-import { defineProjection, Projection } from "@/kernel/projections/projection"
+import { defineProjection, Projection, maybePaginate } from "@/kernel/projections/projection"
 import { registerAggregate } from "@/kernel/aggregates/registry"
 
 export interface IntegrationsModuleOptions {
@@ -226,8 +226,8 @@ export function integrationsModule(opts: IntegrationsModuleOptions = {}): RosMod
   const listWebhooks: QueryHandler = {
     queryType: "list.webhooks",
     requiredPermission: "integration:view",
-    async handle(_params, ctx) {
-      return ctx.projections
+    async handle(params, ctx) {
+      const rows = ctx.projections
         .get<WebhooksEndpointsState>("webhooks.endpoints")
         .state.endpoints.filter((e) => e.active)
         .map((e) => ({
@@ -240,6 +240,7 @@ export function integrationsModule(opts: IntegrationsModuleOptions = {}): RosMod
           // Never leak the signing secret through a query.
           hasSecret: Boolean(e.secret),
         }))
+      return maybePaginate(rows, params)
     },
   }
 
@@ -249,12 +250,12 @@ export function integrationsModule(opts: IntegrationsModuleOptions = {}): RosMod
     async handle(params) {
       const status = params.status ? String(params.status) : undefined
       const channel = params.channel ? String(params.channel) : undefined
-      const limit = params.limit ? Number(params.limit) : 200
       let rows = [...webhooks.list(), ...connectors.list()]
       if (status) rows = rows.filter((m) => m.status === status)
       if (channel) rows = rows.filter((m) => m.channel === channel)
       rows.sort((a, b) => b.createdAt - a.createdAt || b.position - a.position)
-      return rows.slice(0, limit)
+      if (params.limit == null && params.cursor == null) return rows.slice(0, 200)
+      return maybePaginate(rows, params)
     },
   }
 

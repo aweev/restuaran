@@ -1,123 +1,90 @@
 import { NextResponse } from "next/server"
-import prisma from "@/lib/prisma"
-import { withAuth, type AuthenticatedRequest } from "@/middleware/auth-middleware"
+import { withAuth, type AuthenticatedRequest, type RouteContext } from "@/middleware/auth-middleware"
+import { one, sqlWrite, audit, toNum } from "@/lib/db-helpers"
 import { z } from "zod"
 
-// GET - Fetch a specific wait list entry
-export const GET = withAuth(async (req: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) => {
+type Ctx = RouteContext<{ id: string }>
+
+function shape(row: Record<string, unknown>) {
+  return { ...row, partySize: toNum(row.partySize), estimatedWaitTime: toNum(row.estimatedWaitTime) }
+}
+
+export const GET = withAuth(async (_req: AuthenticatedRequest, { params }: Ctx) => {
   try {
     const { id } = await params
-
-    const waitListEntry = await prisma.waitList.findUnique({
-      where: { id },
-    })
-
-    if (!waitListEntry) {
-      return NextResponse.json({ error: "Wait list entry not found" }, { status: 404 })
-    }
-
-    return NextResponse.json(waitListEntry)
+    const row = await one(`SELECT * FROM "WaitlistEntry" WHERE id = $1`, [id])
+    if (!row) return NextResponse.json({ error: "Wait list entry not found" }, { status: 404 })
+    return NextResponse.json(shape(row))
   } catch (error) {
-    console.error("Error fetching wait list entry:", error)
+    console.error("[waitlist] fetch failed:", error)
     return NextResponse.json({ error: "Failed to fetch wait list entry" }, { status: 500 })
   }
 })
 
-// Schema for updating wait list entries
-const updateWaitListSchema = z.object({
-  customerName: z.string().min(1, "Customer name is required").optional(),
-  phoneNumber: z.string().optional(),
+const updateSchema = z.object({
+  customerName: z.string().min(1).optional(),
+  phoneNumber: z.string().optional().nullable(),
   partySize: z.number().int().positive().optional(),
   estimatedWaitTime: z.number().int().min(0).optional(),
-  notes: z.string().optional(),
+  notes: z.string().optional().nullable(),
   notified: z.boolean().optional(),
 })
 
-// PATCH - Update a wait list entry
-export const PATCH = withAuth(async (req: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) => {
+export const PATCH = withAuth(async (req: AuthenticatedRequest, { params }: Ctx) => {
   try {
     const { id } = await params
-    const body = await req.json()
+    const validated = updateSchema.parse(await req.json())
 
-    // Validate request body
-    const validatedData = updateWaitListSchema.parse(body)
+    const existing = await one(`SELECT id FROM "WaitlistEntry" WHERE id = $1`, [id])
+    if (!existing) return NextResponse.json({ error: "Wait list entry not found" }, { status: 404 })
 
-    // Check if wait list entry exists
-    const existingEntry = await prisma.waitList.findUnique({
-      where: { id },
-    })
-
-    if (!existingEntry) {
-      return NextResponse.json({ error: "Wait list entry not found" }, { status: 404 })
+    const keys = Object.keys(validated).filter((k) => (validated as Record<string, unknown>)[k] !== undefined)
+    if (keys.length > 0) {
+      const setClause = keys.map((k, i) => `"${k}" = $${i + 2}`).join(", ")
+      await sqlWrite(
+        `UPDATE "WaitlistEntry" SET ${setClause} WHERE id = $1`,
+        [id, ...keys.map((k) => (validated as Record<string, unknown>)[k])],
+      )
     }
 
-    // Update wait list entry
-    const updatedEntry = await prisma.waitList.update({
-      where: { id },
-      data: validatedData,
+    const row = await one(`SELECT * FROM "WaitlistEntry" WHERE id = $1`, [id])
+    await audit({
+      userId: req.user.sub,
+      action: "UPDATE",
+      entity: "WAITLIST",
+      entityId: id,
+      details: { customerName: row?.customerName, notified: row?.notified },
     })
 
-    // Log the action
-    await prisma.auditLog.create({
-      data: {
-        userId: req.user.sub,
-        action: "UPDATE",
-        entity: "WAITLIST",
-        entityId: id,
-        details: {
-          customerName: updatedEntry.customerName,
-          notified: updatedEntry.notified,
-        },
-      },
-    })
-
-    return NextResponse.json(updatedEntry)
+    return NextResponse.json(shape(row ?? {}))
   } catch (error) {
-    console.error("Error updating wait list entry:", error)
-
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: "Validation error", details: error.errors }, { status: 400 })
     }
-
+    console.error("[waitlist] update failed:", error)
     return NextResponse.json({ error: "Failed to update wait list entry" }, { status: 500 })
   }
 })
 
-// DELETE - Remove a wait list entry
-export const DELETE = withAuth(async (req: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) => {
+export const DELETE = withAuth(async (req: AuthenticatedRequest, { params }: Ctx) => {
   try {
     const { id } = await params
+    const existing = await one(`SELECT * FROM "WaitlistEntry" WHERE id = $1`, [id])
+    if (!existing) return NextResponse.json({ error: "Wait list entry not found" }, { status: 404 })
 
-    // Check if wait list entry exists
-    const existingEntry = await prisma.waitList.findUnique({
-      where: { id },
-    })
-
-    if (!existingEntry) {
-      return NextResponse.json({ error: "Wait list entry not found" }, { status: 404 })
-    }
-
-    // Delete wait list entry
-    await prisma.waitList.delete({
-      where: { id },
-    })
-
-    // Log the action
-    await prisma.auditLog.create({
-      data: {
-        userId: req.user.sub,
-        action: "DELETE",
-        entity: "WAITLIST",
-        entityId: id,
-        details: {
-          customerName: existingEntry.customerName,
-        },
-      },
+    await sqlWrite(`DELETE FROM "WaitlistEntry" WHERE id = $1`, [id])
+    await audit({
+      userId: req.user.sub,
+      action: "DELETE",
+      entity: "WAITLIST",
+      entityId: id,
+      details: { customerName: existing.customerName },
     })
 
     return NextResponse.json({ success: true })
   } catch (error) {
-    console.error("Error deleting wait list entry:", error)
+    console.error("[waitlist] delete failed:", error)
     return NextResponse.json({ error: "Failed to delete wait list entry" }, { status: 500 })
   }
 })
+

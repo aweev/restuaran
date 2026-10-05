@@ -79,3 +79,16 @@ export function buildEvent<TPayload extends AttributeBag>(input: NewEventInput<T
 export function eventTopic(event: Pick<DomainEvent, "tenant" | "eventType">): string {
   return `${event.tenant.orgId}.${event.tenant.venueId}.${event.eventType}`
 }
+
+export function versionConflictError(
+  expected: number,
+  current: number,
+  scope?: string,
+): { code: string; message: string; details: AttributeBag } {
+  const where = scope ? ` on ${scope}` : ""
+  return {
+    code: "VERSION_CONFLICT",
+    message: `Optimistic concurrency conflict${where}: expected v${expected}, current v${current}`,
+    details: { expectedVersion: expected, currentVersion: current },
+  }
+}

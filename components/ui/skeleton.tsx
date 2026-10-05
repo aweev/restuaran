@@ -4,10 +4,14 @@ function Skeleton({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="skeleton"
-      className={cn("bg-accent animate-pulse rounded-md", className)}
+      // `pos-skeleton` is the travelling-highlight shimmer from globals.css.
+      // A static pulse previously read as a stuck UI rather than as loading.
+      className={cn("pos-skeleton rounded-md", className)}
+      aria-hidden="true"
       {...props}
     />
   )
 }
 
 export { Skeleton }
+

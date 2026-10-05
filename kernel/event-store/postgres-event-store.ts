@@ -6,7 +6,7 @@ import {
   StoredEvent,
   TenantContext,
 } from "@/kernel/types"
-import { AppendOptions, EventQuery, EventStore } from "./event-store"
+import { AppendOptions, EventQuery, EventStore, versionConflictError } from "./event-store"
 
 type SqlClient = {
   unsafe: (query: string, params?: unknown[]) => Promise<Array<Record<string, unknown>>>
@@ -113,19 +113,21 @@ SELECT global_position, aggregate_version FROM ins`
       rows = await this.db.unsafe(sql, params)
     } catch (err) {
       if (isUniqueViolation(err)) {
-        throw kernelError(
-          "VERSION_CONFLICT",
-          `Concurrent append conflict on ${first.aggregateType}/${first.aggregateId} expected v${expected}`
-        )
+        const current = await this.currentVersion(
+          first.tenant.orgId, first.tenant.venueId, first.aggregateType, first.aggregateId,
+        ).catch(() => expected)
+        const v = versionConflictError(expected, current, `${first.aggregateType}/${first.aggregateId}`)
+        throw kernelError(v.code, `${v.message} (concurrent winner)`, v.details)
       }
       throw err
     }
 
     if (rows.length !== events.length) {
-      throw kernelError(
-        "VERSION_CONFLICT",
-        `Optimistic concurrency conflict on ${first.aggregateType}/${first.aggregateId} expected v${expected}`
-      )
+      const current = await this.currentVersion(
+        first.tenant.orgId, first.tenant.venueId, first.aggregateType, first.aggregateId,
+      ).catch(() => expected)
+      const v = versionConflictError(expected, current, `${first.aggregateType}/${first.aggregateId}`)
+      throw kernelError(v.code, v.message, v.details)
     }
 
     const positionByVersion = new Map<number, number>()
@@ -145,6 +147,20 @@ SELECT global_position, aggregate_version FROM ins`
       }
     }
     return stored
+  }
+
+  /** Actual stream head across live + archive tables (conflict path only). */
+  private async currentVersion(orgId: string, venueId: string, aggregateType: string, aggregateId: string): Promise<number> {
+    const rows = await this.db.unsafe(
+      `SELECT GREATEST(
+        COALESCE((SELECT MAX(aggregate_version) FROM ros_events
+                  WHERE org_id = $1 AND venue_id = $2 AND aggregate_type = $3 AND aggregate_id = $4), 0),
+        COALESCE((SELECT MAX(aggregate_version) FROM ros_events_archive
+                  WHERE org_id = $1 AND venue_id = $2 AND aggregate_type = $3 AND aggregate_id = $4), 0)
+      ) AS current_version`,
+      [orgId, venueId, aggregateType, aggregateId],
+    )
+    return Number((rows[0] as Record<string, unknown> | undefined)?.current_version ?? 0)
   }
 
   async query(q: EventQuery): Promise<StoredEvent[]> {

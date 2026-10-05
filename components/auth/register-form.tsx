@@ -134,7 +134,6 @@ export function RegisterForm() {
                 <SelectValue placeholder="Select role" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="admin">Administrator</SelectItem>
                 <SelectItem value="manager">Manager</SelectItem>
                 <SelectItem value="server">Server</SelectItem>
                 <SelectItem value="kitchen">Kitchen Staff</SelectItem>

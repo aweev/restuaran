@@ -11,7 +11,7 @@ export function OrderReceipt({ order }: OrderReceiptProps) {
   return (
     <div className="mx-auto max-w-md space-y-6 p-4">
       <div className="text-center">
-        <h2 className="text-xl font-bold">Restaurant POS</h2>
+        <h2 className="text-xl font-bold">Maison Chili POS</h2>
         <p className="text-sm text-muted-foreground">123 Main Street, City</p>
         <p className="text-sm text-muted-foreground">Tel: (123) 456-7890</p>
       </div>

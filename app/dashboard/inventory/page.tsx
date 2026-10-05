@@ -15,9 +15,19 @@ import { Plus, FileUp } from "lucide-react"
 import { Loader2 } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { AddIngredientForm } from "@/components/inventory/add-ingredient-form"
+import { EmptyState } from "@/components/pos/ui-states"
 import { format } from "date-fns"
+import { RequireCapability } from "@/lib/auth-guard"
 
 export default function InventoryPage() {
+  return (
+    <RequireCapability capability="inventory:view">
+      <InventoryInner />
+    </RequireCapability>
+  )
+}
+
+function InventoryInner() {
   const { state, fetchInventory } = useInventory()
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState("")
@@ -148,7 +158,33 @@ export default function InventoryPage() {
           </div>
         </div>
         <TabsContent value="all" className="space-y-4" id="inventory-table">
-          <InventoryTable ingredients={filteredIngredients} />
+          {filteredIngredients.length === 0 ? (
+            <EmptyState
+              title={state.ingredients.length === 0 ? "No ingredients yet" : "No ingredients match this filter"}
+              hint={
+                state.ingredients.length === 0
+                  ? "Add your first ingredient to track stock, then wire menu recipes so firing depletes it."
+                  : "Try a different search — or clear it to see everything."
+              }
+              action={
+                state.ingredients.length === 0 ? (
+                  <Dialog>
+                    <DialogTrigger asChild>
+                      <Button size="sm"><Plus className="mr-2 h-4 w-4" />Add first ingredient</Button>
+                    </DialogTrigger>
+                    <DialogContent className="sm:max-w-[425px]">
+                      <DialogHeader><DialogTitle>Add New Ingredient</DialogTitle></DialogHeader>
+                      <AddIngredientForm />
+                    </DialogContent>
+                  </Dialog>
+                ) : (
+                  <Button size="sm" variant="outline" onClick={() => setSearchQuery("")}>Clear search</Button>
+                )
+              }
+            />
+          ) : (
+            <InventoryTable ingredients={filteredIngredients} />
+          )}
         </TabsContent>
         <TabsContent value="low" className="space-y-4">
           <InventoryTable ingredients={lowStockIngredients} />

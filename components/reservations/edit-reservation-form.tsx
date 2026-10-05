@@ -27,8 +27,16 @@ export function EditReservationForm({ reservation, tables }: EditReservationForm
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const [date, setDate] = useState<Date>(new Date(reservation.date))
-  const reservationTime = new Date(reservation.time)
-  const initialTimeString = `${reservationTime.getHours().toString().padStart(2, "0")}:${reservationTime.getMinutes().toString().padStart(2, "0")}`
+  // Kernel rows carry HH:MM; legacy rows carry full ISO. Accept both.
+  const initialTimeString = (() => {
+    const hm = /^(\d{2}):(\d{2})/.exec(reservation.time)
+    if (hm) return `${hm[1]}:${hm[2]}`
+    const parsed = new Date(reservation.time)
+    if (!Number.isNaN(parsed.getTime())) {
+      return `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}`
+    }
+    return "18:00"
+  })()
   const [time, setTime] = useState(initialTimeString)
 
   const [formData, setFormData] = useState({

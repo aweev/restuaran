@@ -142,6 +142,20 @@ function dispatch(action: Action) {
 
 type Toast = Omit<ToasterToast, "id">
 
+async function sonnerCompat(props: Toast) {
+  try {
+    const { toast: sonner } = await import("sonner")
+    const title = typeof props.title === "string" ? props.title : "Notice"
+    const description =
+      typeof props.description === "string" ? props.description : undefined
+    const message = description ? `${title} — ${description}` : title
+    if (props.variant === "destructive") sonner.error(title, { description })
+    else sonner(message)
+  } catch {
+    /* best-effort */
+  }
+}
+
 function toast({ ...props }: Toast) {
   const id = genId()
 
@@ -163,6 +177,7 @@ function toast({ ...props }: Toast) {
       },
     },
   })
+  void sonnerCompat(props)
 
   return {
     id: id,

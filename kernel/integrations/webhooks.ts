@@ -16,6 +16,54 @@ export interface SignedBody {
   signature: string
 }
 
+const PRIVATE_IP_PATTERNS = [
+  /^10\./,
+  /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
+  /^192\.168\./,
+  /^127\./,
+  /^169\.254\./,
+  /^::1$/,
+  /^fc/,
+  /^fd/,
+]
+
+function isPrivateIp(ip: string): boolean {
+  return PRIVATE_IP_PATTERNS.some((p) => p.test(ip))
+}
+
+async function resolveAndValidateHostname(hostname: string): Promise<string[]> {
+  try {
+    const dns = await import("dns")
+    const results = await dns.promises.lookup(hostname, { all: true })
+    return results.map((r) => r.address)
+  } catch {
+    return []
+  }
+}
+
+export async function validateTargetUrl(url: string): Promise<void> {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new Error(`Invalid webhook URL: ${url}`)
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`Webhook URL must be http(s): ${url}`)
+  }
+
+  const hostname = parsed.hostname
+  const ips = await resolveAndValidateHostname(hostname)
+  if (ips.length === 0) {
+    throw new Error(`Could not resolve hostname: ${hostname}`)
+  }
+  for (const ip of ips) {
+    if (isPrivateIp(ip)) {
+      throw new Error(`Webhook target resolves to private IP: ${ip}`)
+    }
+  }
+}
+
 /** HMAC-SHA256 over `${timestamp}.${rawBody}` — the contract external receivers verify. */
 export function signBody(secret: string, rawBody: string, timestamp = Math.floor(Date.now() / 1000)): SignedBody {
   const signature = `sha256=${createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest("hex")}`
@@ -95,19 +143,43 @@ export function webhookDeliveriesFor(
 /** Production transport: POSTs the signed envelope to the subscriber URL. */
 export class HttpWebhookTransport implements OutboundTransport {
   private doFetch: typeof fetch
+  private readonly timeoutMs: number
+  private readonly maxResponseBytes: number
 
-  constructor(fetchImpl?: typeof fetch) {
+  constructor(fetchImpl?: typeof fetch, options?: { timeoutMs?: number; maxResponseBytes?: number }) {
     this.doFetch = fetchImpl ?? fetch
+    this.timeoutMs = options?.timeoutMs ?? 10000
+    this.maxResponseBytes = options?.maxResponseBytes ?? 1024 * 1024 // 1MB
   }
 
   async deliver(message: OutboundMessage): Promise<void> {
-    const res = await this.doFetch(message.target, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...message.headers },
-      body: JSON.stringify(message.body),
-    })
-    if (!res.ok) {
-      throw new Error(`webhook delivery failed: ${res.status} ${await res.text().catch(() => "")}`)
+    await validateTargetUrl(message.target)
+
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs)
+
+    try {
+      const res = await this.doFetch(message.target, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...message.headers },
+        body: JSON.stringify(message.body),
+        signal: controller.signal,
+      })
+
+      if (!res.ok) {
+        throw new Error(`webhook delivery failed: ${res.status} ${await res.text().catch(() => "")}`)
+      }
+
+      // Limit response body size
+      const contentLength = res.headers.get("content-length")
+      if (contentLength && parseInt(contentLength, 10) > this.maxResponseBytes) {
+        throw new Error(`webhook response too large: ${contentLength} bytes`)
+      }
+
+      // Consume body to avoid connection issues
+      await res.arrayBuffer()
+    } finally {
+      clearTimeout(timeoutId)
     }
   }
 }

@@ -13,6 +13,7 @@ import { Plus } from "lucide-react"
 import { Loader2 } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { AddReservationForm } from "@/components/reservations/add-reservation-form"
+import { EmptyState } from "@/components/pos/ui-states"
 import { format } from "date-fns"
 
 export default function ReservationsPage() {
@@ -158,7 +159,33 @@ export default function ReservationsPage() {
                 <TabsTrigger value="calendar">Time Slots</TabsTrigger>
               </TabsList>
               <TabsContent value="list">
-                <ReservationList reservations={filteredReservations} tables={tableState.tables} />
+                {filteredReservations.length === 0 ? (
+                  <EmptyState
+                    title={
+                      reservationState.reservations.length === 0
+                        ? "No reservations yet"
+                        : "Nothing booked for this day"
+                    }
+                    hint={
+                      reservationState.reservations.length === 0
+                        ? "Take your first booking — it lands on this calendar and guards against double-booking."
+                        : "Pick another day, or take a booking for this one."
+                    }
+                    action={
+                      <Dialog>
+                        <DialogTrigger asChild>
+                          <Button size="sm"><Plus className="mr-2 h-4 w-4" />New reservation</Button>
+                        </DialogTrigger>
+                        <DialogContent className="sm:max-w-[425px]">
+                          <DialogHeader><DialogTitle>New Reservation</DialogTitle></DialogHeader>
+                          <AddReservationForm tables={tableState.tables} />
+                        </DialogContent>
+                      </Dialog>
+                    }
+                  />
+                ) : (
+                  <ReservationList reservations={filteredReservations} tables={tableState.tables} />
+                )}
               </TabsContent>
               <TabsContent value="calendar">
                 <ReservationCalendar

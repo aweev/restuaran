@@ -5,7 +5,7 @@ import { QueryHandler } from "@/kernel/queries/query-bus"
 import { CommandBus } from "@/kernel/commands/command-bus"
 import { PlatformOrderAggregate, platformOrderId } from "@/kernel/aggregates"
 import { RosModule, ModuleRuntime } from "@/kernel/modules/module-registry"
-import { defineProjection, Projection } from "@/kernel/projections/projection"
+import { defineProjection, Projection, maybePaginate } from "@/kernel/projections/projection"
 import { systemActor } from "@/kernel/tenant/tenant"
 
 export interface PlatformOrderRow {
@@ -280,7 +280,8 @@ export function platformModule(): RosModule {
     async handle(params, ctx) {
       const rows = ctx.projections.get<PlatformOrdersState>("platform.orders").state.rows
       const status = params.status ? String(params.status) : null
-      return status ? rows.filter((r) => r.status === status) : rows
+      const filtered = status ? rows.filter((r) => r.status === status) : rows
+      return maybePaginate(filtered, params)
     },
   }
 

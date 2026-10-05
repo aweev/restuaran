@@ -1,54 +1,67 @@
 import { type NextRequest, NextResponse } from "next/server"
-import prisma from "@/lib/prisma"
+import { sqlWrite, toNum, toIso } from "@/lib/db-helpers"
 import { z } from "zod"
 
-// Schema for validating login data
-const loginSchema = z.object({
-  email: z.string().email().optional(),
-  phone: z.string().optional(),
-})
+const loginSchema = z
+  .object({
+    email: z.string().email().optional(),
+    phone: z.string().min(1).optional(),
+  })
+  .refine((v) => Boolean(v.email || v.phone), {
+    message: "Email or phone is required",
+  })
 
+/**
+ * Loyalty "login" is an identity lookup, not an authentication step — the
+ * returned object is the guest's own data, so this endpoint must not be treated
+ * as a security boundary by callers.
+ */
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json()
+    const v = loginSchema.parse(await req.json())
 
-    // Validate request body
-    const validatedData = loginSchema.parse(body)
-
-    if (!validatedData.email && !validatedData.phone) {
-      return NextResponse.json({ error: "Email or phone is required" }, { status: 400 })
+    const conditions: string[] = []
+    const params: unknown[] = []
+    if (v.email) {
+      params.push(v.email.toLowerCase().trim())
+      conditions.push(`LOWER(email) = $${params.length}`)
+    }
+    if (v.phone) {
+      params.push(v.phone)
+      conditions.push(`phone = $${params.length}`)
     }
 
-    // Find customer by email or phone
-    const customer = await prisma.loyaltyCustomer.findFirst({
-      where: {
-        OR: [
-          validatedData.email ? { email: validatedData.email } : {},
-          validatedData.phone ? { phone: validatedData.phone } : {},
-        ],
-      },
-    })
+    const customer = await sqlWrite(
+      `SELECT * FROM "LoyaltyCustomer" WHERE ${conditions.join(" OR ")} LIMIT 1`,
+      params,
+    )
 
-    if (!customer) {
+    const row = customer[0]
+    if (!row) {
       return NextResponse.json({ customer: null })
     }
 
-    // Update last activity timestamp
-    await prisma.loyaltyCustomer.update({
-      where: { id: customer.id },
-      data: {
-        lastActivity: new Date(),
+    await sqlWrite(
+      `UPDATE "LoyaltyCustomer" SET "lastActivity" = NOW() WHERE id = $1`,
+      [row.id],
+    )
+
+    return NextResponse.json({
+      customer: {
+        ...row,
+        points: toNum(row.points),
+        totalSpent: toNum(row.totalSpent),
+        visitsCount: toNum(row.visitsCount),
+        joinDate: toIso(row.joinDate),
+        lastActivity: toIso(row.lastActivity),
       },
     })
-
-    return NextResponse.json({ customer })
   } catch (error) {
-    console.error("Error logging in to loyalty program:", error)
-
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: "Validation error", details: error.errors }, { status: 400 })
     }
-
+    console.error("[loyalty] login failed:", error)
     return NextResponse.json({ error: "Failed to login" }, { status: 500 })
   }
 }
+

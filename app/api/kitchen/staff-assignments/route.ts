@@ -1,101 +1,85 @@
 import { type NextRequest, NextResponse } from "next/server"
-import prisma from "@/lib/prisma"
 import { withAuth } from "@/middleware/auth-middleware"
+import { one, sqlWrite } from "@/lib/db-helpers"
 import { z } from "zod"
 
-// Schema for staff assignment
-const staffAssignmentSchema = z.object({
-  userId: z.string(),
-  userName: z.string(),
-  station: z.string(),
+const assignmentSchema = z.object({
+  userId: z.string().min(1),
+  userName: z.string().min(1),
+  station: z.string().min(1),
   assignedOrders: z.array(z.string()).optional(),
 })
 
-// GET - Fetch all staff assignments
+/** Station roster flattened to the `{ userId, userName, station, assignedOrders[] }` shape. */
 export const GET = withAuth(async () => {
   try {
-    const staffAssignments = await prisma.kitchenStaffAssignment.findMany({
-      include: {
-        assignedOrders: true,
-      },
-    })
-
-    // Transform the data to match the expected format
-    interface StaffAssignment {
-      userId: string;
-      userName: string;
-      station: string;
-      assignedOrders: string[];
-    }
-
-    interface AssignedOrder {
-      orderId: string;
-    }
-
-    interface RawStaffAssignment {
-      userId: string;
-      userName: string;
-      station: string;
-      assignedOrders: AssignedOrder[];
-    }
-
-    const formattedAssignments: StaffAssignment[] = staffAssignments.map((assignment: RawStaffAssignment) => ({
-      userId: assignment.userId,
-      userName: assignment.userName,
-      station: assignment.station,
-      assignedOrders: assignment.assignedOrders.map((order: AssignedOrder) => order.orderId),
-    }));
-
-    return NextResponse.json(formattedAssignments)
+    const rows = await sqlWrite(
+      `SELECT a."userId", a."userName", a.station,
+              COALESCE((
+                SELECT json_agg(ao."orderId")
+                FROM "AssignedOrder" ao WHERE ao."userId" = a."userId"
+              ), '[]'::json) AS "assignedOrders"
+         FROM "KitchenStaffAssignment" a
+        ORDER BY a.station, a."userName"`,
+    )
+    return NextResponse.json(
+      rows.map((r) => ({
+        userId: r.userId,
+        userName: r.userName,
+        station: r.station,
+        assignedOrders: Array.isArray(r.assignedOrders) ? r.assignedOrders : [],
+      })),
+    )
   } catch (error) {
-    console.error("Error fetching staff assignments:", error)
+    console.error("[kitchen] staff assignments fetch failed:", error)
     return NextResponse.json({ error: "Failed to fetch staff assignments" }, { status: 500 })
   }
 })
 
-// POST - Create or update a staff assignment
 export const POST = withAuth(async (req: NextRequest) => {
   try {
-    const body = await req.json()
+    const v = assignmentSchema.parse(await req.json())
 
-    // Validate request body
-    const validatedData = staffAssignmentSchema.parse(body)
-
-    // Check if assignment already exists
-    const existingAssignment = await prisma.kitchenStaffAssignment.findUnique({
-      where: { userId: validatedData.userId },
-    })
-
-    if (existingAssignment) {
-      // Update existing assignment
-      const updatedAssignment = await prisma.kitchenStaffAssignment.update({
-        where: { userId: validatedData.userId },
-        data: {
-          userName: validatedData.userName,
-          station: validatedData.station,
-        },
-      })
-
-      return NextResponse.json(updatedAssignment)
-    } else {
-      // Create new assignment
-      const newAssignment = await prisma.kitchenStaffAssignment.create({
-        data: {
-          userId: validatedData.userId,
-          userName: validatedData.userName,
-          station: validatedData.station,
-        },
-      })
-
-      return NextResponse.json(newAssignment)
+    const user = await one(`SELECT id, name FROM "User" WHERE id = $1`, [v.userId])
+    if (!user) {
+      return NextResponse.json({ error: "Staff member not found" }, { status: 404 })
     }
-  } catch (error) {
-    console.error("Error creating/updating staff assignment:", error)
 
+    const rows = await sqlWrite(
+      `INSERT INTO "KitchenStaffAssignment" ("userId", "userName", station)
+       VALUES ($1, $2, $3)
+       ON CONFLICT ("userId")
+       DO UPDATE SET "userName" = EXCLUDED."userName", station = EXCLUDED.station
+       RETURNING *`,
+      [v.userId, v.userName, v.station],
+    )
+
+    // Replace the assignment set when the caller supplied one.
+    if (v.assignedOrders) {
+      await sqlWrite("BEGIN")
+      try {
+        await sqlWrite(`DELETE FROM "AssignedOrder" WHERE "userId" = $1`, [v.userId])
+        for (const orderId of v.assignedOrders) {
+          await sqlWrite(
+            `INSERT INTO "AssignedOrder" ("userId", "orderId") VALUES ($1, $2)
+             ON CONFLICT DO NOTHING`,
+            [v.userId, orderId],
+          )
+        }
+        await sqlWrite("COMMIT")
+      } catch (txErr) {
+        await sqlWrite("ROLLBACK").catch(() => undefined)
+        throw txErr
+      }
+    }
+
+    return NextResponse.json(rows[0] ?? {})
+  } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: "Validation error", details: error.errors }, { status: 400 })
     }
-
+    console.error("[kitchen] staff assignment upsert failed:", error)
     return NextResponse.json({ error: "Failed to create/update staff assignment" }, { status: 500 })
   }
 })
+

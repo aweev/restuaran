@@ -1,6 +1,6 @@
 "use client"
 
-import { createContext, useReducer, useContext, useEffect, type ReactNode } from "react"
+import { createContext, useReducer, useContext, useEffect, useCallback, useRef, type ReactNode } from "react"
 import { useRouter } from "next/navigation"
 import type {
   AuthState,
@@ -15,11 +15,13 @@ import type {
 } from "@/types/auth"
 import { hasPermission } from "@/lib/auth"
 
+const REFRESH_THRESHOLD_MS = 5 * 60 * 1000
+
 // Initial state
 const initialState: AuthState = {
   user: null,
   isAuthenticated: false,
-  token: null,
+  accessToken: null,
   loading: true,
   error: null,
   currentShift: null,
@@ -28,20 +30,22 @@ const initialState: AuthState = {
 // Action types
 type AuthAction =
   | { type: "AUTH_START" }
-  | { type: "LOGIN_SUCCESS"; payload: { user: User; token: string } }
+  | { type: "LOGIN_SUCCESS"; payload: { user: User; accessToken: string } }
   | { type: "LOGIN_FAILURE"; payload: string }
   | { type: "LOGOUT" }
   | { type: "CLEAR_ERROR" }
   | { type: "UPDATE_USER"; payload: User }
   | { type: "START_SHIFT"; payload: UserShift }
   | { type: "END_SHIFT"; payload: UserShift }
-  | { type: "REGISTER_SUCCESS"; payload: { user: User; token: string } }
+  | { type: "REGISTER_SUCCESS"; payload: { user: User; accessToken: string } }
   | { type: "REGISTER_FAILURE"; payload: string }
   | { type: "PASSWORD_RESET_SENT" }
   | { type: "PASSWORD_RESET_FAILURE"; payload: string }
   | { type: "PASSWORD_RESET_SUCCESS" }
   | { type: "PASSWORD_CHANGE_SUCCESS" }
   | { type: "PASSWORD_CHANGE_FAILURE"; payload: string }
+  | { type: "SET_ACCESS_TOKEN"; payload: string }
+  | { type: "TOKEN_REFRESHED"; payload: { user: User; accessToken: string } }
 
 // Reducer
 const authReducer = (state: AuthState, action: AuthAction): AuthState => {
@@ -56,7 +60,7 @@ const authReducer = (state: AuthState, action: AuthAction): AuthState => {
       return {
         ...state,
         user: action.payload.user,
-        token: action.payload.token,
+        accessToken: action.payload.accessToken,
         isAuthenticated: true,
         loading: false,
         error: null,
@@ -65,7 +69,7 @@ const authReducer = (state: AuthState, action: AuthAction): AuthState => {
       return {
         ...state,
         user: null,
-        token: null,
+        accessToken: null,
         isAuthenticated: false,
         loading: false,
         error: action.payload,
@@ -74,7 +78,7 @@ const authReducer = (state: AuthState, action: AuthAction): AuthState => {
       return {
         ...state,
         user: null,
-        token: null,
+        accessToken: null,
         isAuthenticated: false,
         loading: false,
         currentShift: null,
@@ -117,7 +121,7 @@ const authReducer = (state: AuthState, action: AuthAction): AuthState => {
       return {
         ...state,
         user: action.payload.user,
-        token: action.payload.token,
+        accessToken: action.payload.accessToken,
         isAuthenticated: true,
         loading: false,
         error: null,
@@ -155,6 +159,17 @@ const authReducer = (state: AuthState, action: AuthAction): AuthState => {
         loading: false,
         error: action.payload,
       }
+    case "SET_ACCESS_TOKEN":
+      return {
+        ...state,
+        accessToken: action.payload,
+      }
+    case "TOKEN_REFRESHED":
+      return {
+        ...state,
+        user: action.payload.user,
+        accessToken: action.payload.accessToken,
+      }
     default:
       return state
   }
@@ -164,7 +179,7 @@ const authReducer = (state: AuthState, action: AuthAction): AuthState => {
 interface AuthContextType {
   state: AuthState
   login: (credentials: LoginCredentials) => Promise<void>
-  logout: () => void
+  logout: () => Promise<void>
   register: (userData: RegisterUserData) => Promise<void>
   updateUser: (userData: UpdateUserData) => Promise<void>
   startShift: () => Promise<void>
@@ -174,6 +189,7 @@ interface AuthContextType {
   changePassword: (data: ChangePasswordData) => Promise<void>
   clearError: () => void
   hasPermission: (permission: PermissionName) => boolean
+  refreshAccessToken: () => Promise<boolean>
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -182,59 +198,117 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined)
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [state, dispatch] = useReducer(authReducer, initialState)
   const router = useRouter()
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Load from localStorage on initial render
+  // Check if access token is expired or about to expire
+  const isTokenExpiring = useCallback((token: string | null): boolean => {
+    if (!token) return true
+    try {
+      const payload = JSON.parse(atob(token.split(".")[1]))
+      const expiry = payload.exp * 1000
+      return Date.now() + REFRESH_THRESHOLD_MS >= expiry
+    } catch {
+      return true
+    }
+  }, [])
+
+  // Refresh access token using refresh token cookie
+  const refreshAccessToken = useCallback(async (): Promise<boolean> => {
+    try {
+      const response = await fetch("/api/auth/refresh", {
+        method: "POST",
+        credentials: "include",
+      })
+
+      if (!response.ok) {
+        return false
+      }
+
+      const data = await response.json()
+      dispatch({
+        type: "TOKEN_REFRESHED",
+        payload: { user: data.user, accessToken: data.accessToken },
+      })
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
+  // Schedule token refresh
+  const scheduleTokenRefresh = useCallback((token: string | null) => {
+    if (refreshTimerRef.current) {
+      clearTimeout(refreshTimerRef.current)
+    }
+    if (!token) return
+
+    try {
+      const payload = JSON.parse(atob(token.split(".")[1]))
+      const expiry = payload.exp * 1000
+      const delay = Math.max(0, expiry - Date.now() - REFRESH_THRESHOLD_MS)
+
+      refreshTimerRef.current = setTimeout(() => {
+        refreshAccessToken().then((success) => {
+          if (!success) {
+            dispatch({ type: "LOGOUT" })
+            router.push("/login")
+          }
+        })
+      }, delay)
+    } catch {
+      // If we can't parse, refresh soon
+      refreshTimerRef.current = setTimeout(() => {
+        refreshAccessToken().then((success) => {
+          if (!success) {
+            dispatch({ type: "LOGOUT" })
+            router.push("/login")
+          }
+        })
+      }, REFRESH_THRESHOLD_MS)
+    }
+  }, [refreshAccessToken, router])
+
+  // Load user from /api/auth/me on initial render (uses HttpOnly cookie)
   useEffect(() => {
     const loadAuthState = async () => {
       try {
-        const storedUser = localStorage.getItem("posUser")
-        const storedToken = localStorage.getItem("posToken")
-        const storedShift = localStorage.getItem("posCurrentShift")
+        const response = await fetch("/api/auth/me", {
+          credentials: "include",
+        })
 
-        if (storedToken && storedUser) {
-          const user = JSON.parse(storedUser)
+        if (response.ok) {
+          const data = await response.json()
           dispatch({
             type: "LOGIN_SUCCESS",
-            payload: { user, token: storedToken },
+            payload: { user: data.user, accessToken: "" },
           })
-
-          // Load current shift if exists
-          if (storedShift) {
-            const currentShift = JSON.parse(storedShift)
-            dispatch({
-              type: "START_SHIFT",
-              payload: currentShift,
-            })
-          }
+          // Trigger immediate refresh to get valid access token
+          await refreshAccessToken()
         } else {
-          dispatch({ type: "LOGOUT" })
+          // Try to refresh token before giving up
+          const refreshed = await refreshAccessToken()
+          if (!refreshed) {
+            dispatch({ type: "LOGOUT" })
+          }
         }
       } catch (error) {
-        console.error("Error loading auth state from localStorage", error)
+        console.error("Error loading auth state:", error)
         dispatch({ type: "LOGOUT" })
       }
     }
 
     loadAuthState()
-  }, [])
+  }, [refreshAccessToken])
 
-  // Save to localStorage whenever state changes
+  // Schedule refresh when access token changes
   useEffect(() => {
-    if (state.user && state.token) {
-      localStorage.setItem("posUser", JSON.stringify(state.user))
-      localStorage.setItem("posToken", state.token)
-
-      if (state.currentShift) {
-        localStorage.setItem("posCurrentShift", JSON.stringify(state.currentShift))
-      } else {
-        localStorage.removeItem("posCurrentShift")
+    scheduleTokenRefresh(state.accessToken)
+    return () => {
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current)
       }
-    } else {
-      localStorage.removeItem("posUser")
-      localStorage.removeItem("posToken")
-      localStorage.removeItem("posCurrentShift")
     }
-  }, [state.user, state.token, state.currentShift])
+  }, [state.accessToken, scheduleTokenRefresh])
 
   // Actions
   const login = async (credentials: LoginCredentials) => {
@@ -245,6 +319,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         headers: {
           "Content-Type": "application/json",
         },
+        credentials: "include",
         body: JSON.stringify(credentials),
       })
 
@@ -256,12 +331,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
       dispatch({
         type: "LOGIN_SUCCESS",
-        payload: { user: data.user, token: data.token },
+        payload: { user: data.user, accessToken: data.accessToken },
       })
 
       // Redirect based on role
       if (data.user.role === "kitchen") {
-        router.push("/kitchen")
+        router.push("/dashboard/kitchen/display")
       } else {
         router.push("/dashboard")
       }
@@ -287,12 +362,16 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     try {
       await fetch("/api/auth/logout", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${state.token}`,
-        },
+        credentials: "include",
       })
     } catch (error) {
       console.error("Error during logout:", error)
+    }
+
+    // Instruct the service worker to purge any cached authenticated API
+    // responses so a shared terminal cannot leak one user's data to the next.
+    if ("serviceWorker" in navigator && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage("CLEAR_AUTH_CACHE")
     }
 
     dispatch({ type: "LOGOUT" })
@@ -306,8 +385,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${state.token}`, // Only admins/managers can register new users
+          Authorization: `Bearer ${state.accessToken}`,
         },
+        credentials: "include",
         body: JSON.stringify(userData),
       })
 
@@ -319,10 +399,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
       dispatch({
         type: "REGISTER_SUCCESS",
-        payload: { user: data.user, token: data.token },
+        payload: { user: data.user, accessToken: data.accessToken },
       })
 
-      router.push("/dashboard")
+      router.push("/dashboard/setup")
     } catch (error) {
       dispatch({
         type: "REGISTER_FAILURE",
@@ -331,16 +411,33 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   }
 
+  const authedHeaders = (): HeadersInit => ({
+    "Content-Type": "application/json",
+    ...(state.accessToken ? { Authorization: `Bearer ${state.accessToken}` } : {}),
+  })
+
+  const kernelPost = async (commandType: string, payload: Record<string, unknown>) => {
+    const response = await fetch("/api/kernel", {
+      method: "POST",
+      headers: authedHeaders(),
+      credentials: "include",
+      body: JSON.stringify(payload ? { commandType, payload } : { commandType, payload: {} }),
+    })
+    const data = await response.json()
+    if (!response.ok || data?.success === false) {
+      throw new Error(data?.error?.message ?? data?.error ?? `Command ${commandType} failed`)
+    }
+    return data
+  }
+
   const updateUser = async (userData: UpdateUserData) => {
     if (!state.user) return Promise.reject("No user logged in")
 
     try {
-      const response = await fetch(`/api/users/${state.user.id}`, {
+      const response = await fetch(`/api/auth/me`, {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${state.token}`,
-        },
+        headers: authedHeaders(),
+        credentials: "include",
         body: JSON.stringify(userData),
       })
 
@@ -366,27 +463,21 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     if (state.currentShift) return Promise.reject("Shift already started")
 
     try {
-      const response = await fetch("/api/shifts", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${state.token}`,
-        },
-        body: JSON.stringify({
-          userId: state.user.id,
-          startTime: new Date().toISOString(),
-        }),
-      })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to start shift")
+      const shiftId = typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `shift-${Date.now()}`
+      await kernelPost("staff.scheduleShift", { shiftId, userId: state.user.id })
+      await kernelPost("staff.clockIn", { shiftId })
+      const data = {
+        id: shiftId,
+        userId: state.user.id,
+        startTime: new Date().toISOString(),
+        endTime: null,
       }
 
       dispatch({
         type: "START_SHIFT",
-        payload: data,
+        payload: data as never,
       })
 
       return Promise.resolve()
@@ -400,22 +491,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     if (!state.currentShift) return Promise.reject("No active shift")
 
     try {
-      const response = await fetch(`/api/shifts/${state.currentShift.id}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${state.token}`,
-        },
-        body: JSON.stringify({
-          endTime: new Date().toISOString(),
-        }),
-      })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to end shift")
-      }
+      await kernelPost("staff.clockOut", { shiftId: state.currentShift.id })
+      const data = { ...state.currentShift, endTime: new Date().toISOString() }
 
       dispatch({
         type: "END_SHIFT",
@@ -492,10 +569,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     try {
       const response = await fetch("/api/auth/change-password", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${state.token}`,
-        },
+        headers: authedHeaders(),
+        credentials: "include",
         body: JSON.stringify(data),
       })
 
@@ -540,6 +615,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         changePassword,
         clearError,
         hasPermission: checkPermission,
+        refreshAccessToken,
       }}
     >
       {children}

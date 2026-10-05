@@ -34,19 +34,19 @@ export type AuthHandler<P> = (
 export function withAuth<P = Record<string, never>>(handler: AuthHandler<P>) {
   return async (req: NextRequest, ctx: RouteContext<P>): Promise<NextResponse> => {
     try {
-      const token = await getTokenFromRequest(req); // Ensure getTokenFromRequest is awaited
+      const token = await getTokenFromRequest(req);
 
       if (!token) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
       }
 
-      const decoded = await verifyToken(token); // Ensure verifyToken is awaited
+      const decoded = await verifyToken(token);
       if (!decoded) {
         return NextResponse.json({ error: "Invalid or expired token" }, { status: 401 });
       }
 
-      // Add user to request. `withAuth` guarantees the handler only runs with a
-      // decoded token, so narrowing here is safe.
+      // Attach the principal so downstream handlers can use req.user without re-verifying.
+      (req as AuthenticatedRequest).user = decoded;
       return handler(req as AuthenticatedRequest, ctx);
     } catch (error) {
       console.error("Auth middleware error:", error);

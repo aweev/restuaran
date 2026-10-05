@@ -23,7 +23,7 @@ export function TableCard({ table }: TableCardProps) {
   }
 
   return (
-    <div className="flex h-16 w-16 flex-col items-center justify-center rounded-lg border bg-white p-2 shadow-sm">
+    <div className="flex h-16 w-16 min-h-[44px] min-w-[44px] flex-col items-center justify-center rounded-lg border bg-white p-2 shadow-sm">
       <div className={`h-2 w-2 rounded-full ${getStatusColor(table.status)}`} />
       <span className="text-lg font-medium">{table.number}</span>
       <span className="text-xs text-muted-foreground">{table.capacity}</span>

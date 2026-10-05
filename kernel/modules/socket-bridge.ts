@@ -88,6 +88,8 @@ export const DEFAULT_ROUTES: Record<string, EventRoute> = {
     legacy: (e) => ({ event: "reservation_update", data: legacyReservation(e) }),
   },
   "reservation.noShow": { rooms: (_e, r) => [...r("reception")] },
+  "reservation.rescheduled": { rooms: (_e, r) => [...r("reception")] },
+  "reservation.detailsUpdated": { rooms: (_e, r) => [...r("reception")] },
   "waitlist.joined": { rooms: (_e, r) => [...r("reception")] },
   "waitlist.notified": { rooms: (_e, r) => [...r("reception")] },
   "waitlist.seated": { rooms: (_e, r) => [...r("allStations")] },
@@ -100,6 +102,16 @@ export const DEFAULT_ROUTES: Record<string, EventRoute> = {
   "inventory.consumed": { rooms: () => [], silent: true },
   "inventory.received": { rooms: (_e, r) => [...r("backOffice")] },
   "inventory.wasted": { rooms: (_e, r) => [...r("backOffice")] },
+  "inventory.adjusted": { rooms: (_e, r) => [...r("backOffice")] },
+  "inventory.itemUpdated": { rooms: (_e, r) => [...r("backOffice")] },
+  "kitchen.stationAssigned": { rooms: (_e, r) => [...r("kitchen")] },
+  "kitchen.stationCleared": { rooms: (_e, r) => [...r("kitchen")] },
+  "customer.enrolled": { rooms: (_e, r) => [...r("reception")] },
+  "giftcard.issued": { rooms: (_e, r) => [...r("management")] },
+  "giftcard.redeemed": { rooms: (_e, r) => [...r("management")] },
+  "giftcard.voided": { rooms: (_e, r) => [...r("management")] },
+  "promotion.defined": { rooms: (_e, r) => [...r("management")] },
+  "promotion.redeemed": { rooms: (_e, r) => [...r("management")] },
 }
 
 function withServer(e: StoredEvent): string[] {
@@ -163,6 +175,48 @@ export class SocketBridge {
 
   private resolve = (room: SemanticRoom): string[] => this.roomMap[room] ?? []
 
+  private batch: SocketEmit[] = []
+  private batchTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly batchWindowMs = 50
+  private readonly maxBatchSize = 50
+
+  /** Flushes coalesced emits: same (room-set, event) pairs merge into one payload. */
+  async flush(): Promise<SocketEmit[]> {
+    const pending = this.batch.splice(0, this.batch.length)
+    if (this.batchTimer) { clearTimeout(this.batchTimer); this.batchTimer = null }
+    if (pending.length === 0) return []
+    const merged = new Map<string, SocketEmit>()
+    for (const emit of pending) {
+      const key = `${[...emit.room].sort().join(",")}::${emit.event}`
+      const existing = merged.get(key)
+      if (existing && Array.isArray((existing.data as { events?: unknown[] }).events)) {
+        ;((existing.data as { events: unknown[] }).events as unknown[]).push(emit.data)
+      } else if (existing) {
+        existing.data = { events: [existing.data, emit.data] }
+      } else {
+        merged.set(key, { ...emit })
+      }
+      if (merged.size >= this.maxBatchSize) break
+    }
+    const out = [...merged.values()]
+    for (const emit of out) {
+      try {
+        await this.transport.emit(emit)
+      } catch (err) {
+        if (this.onError) this.onError(err, emit)
+        console.error(`[kernel:socket] failed to emit ${emit.event}`, err)
+      }
+    }
+    this.published.push(...out)
+    return out
+  }
+
+  private enqueue(emit: SocketEmit): void {
+    this.batch.push(emit)
+    if (this.batch.length >= this.maxBatchSize) { void this.flush(); return }
+    if (!this.batchTimer) this.batchTimer = setTimeout(() => void this.flush(), this.batchWindowMs)
+  }
+
   async handle(event: StoredEvent): Promise<SocketEmit[]> {
     const route = this.routes[event.eventType]
     if (!route || route.silent) return []
@@ -188,15 +242,10 @@ export class SocketBridge {
     const legacy = route.legacy?.(event)
     if (legacy) emits.push({ room: rooms, event: legacy.event, data: legacy.data })
 
-    for (const emit of emits) {
-      try {
-        await this.transport.emit(emit)
-      } catch (err) {
-        if (this.onError) this.onError(err, emit)
-        console.error(`[kernel:socket] failed to emit ${emit.event}`, err)
-      }
-    }
-    this.published.push(...emits)
+    for (const emit of emits) this.enqueue(emit)
+    // Preserve the synchronous contract for tests: flush on next tick still
+    // records immediately for the in-process transport.
+    if (this.transport instanceof RecordingSocketTransport) await this.flush()
     return emits
   }
 
@@ -238,7 +287,7 @@ export class HttpSocketTransport implements SocketTransport {
   }
 }
 
-/** Transport that records emits in-process â€” tests, offline mode, embedded deployments. */
+/** Transport that records emits in-process — tests, offline mode, embedded deployments. */
 export class RecordingSocketTransport implements SocketTransport {
   readonly emitted: SocketEmit[] = []
   async emit(payload: SocketEmit): Promise<void> {

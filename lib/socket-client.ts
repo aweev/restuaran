@@ -317,11 +317,11 @@ export function useSocket() {
   const [isConnected, setIsConnected] = useState(socket?.connected || false);
 
   useEffect(() => {
-    if (authState.token && !socket) {
+    if (authState.accessToken && !socket) {
       console.log("Initializing socket with token...");
       socket = io(SOCKET_URL, {
         auth: {
-          token: authState.token,
+          token: authState.accessToken,
         },
         reconnectionAttempts: 5,
         reconnectionDelay: 1000,
@@ -347,13 +347,13 @@ export function useSocket() {
           console.log("Cleaning up socket instance due to effect re-run or unmount.");
         }
       };
-    } else if (!authState.token && socket) {
+    } else if (!authState.accessToken && socket) {
       console.log("Auth token removed, disconnecting socket.");
       socket.disconnect();
       socket = null;
       setIsConnected(false);
     }
-  }, [authState.token]);
+  }, [authState.accessToken]);
 
   const subscribe = useCallback(<T = AppSocketEventData>(event: string, callback: (data: T) => void) => {
     if (!socket) {

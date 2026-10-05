@@ -1,4 +1,5 @@
 import { ActorContext, AttributeBag, Command, CommandResult, Id, StoredEvent } from "@/kernel/types"
+import type { ZodType } from "zod"
 import { CommandHandler, KernelDeps } from "./command-bus"
 import { Aggregate } from "@/kernel/aggregates/aggregate"
 import { ProjectionRegistry } from "@/kernel/projections/projection"
@@ -25,6 +26,8 @@ export interface CommandExecContext<TPayload extends AttributeBag> {
 export interface CommandSpec<TPayload extends AttributeBag = AttributeBag> {
   commandType: string
   requiredPermission?: string
+  /** Opt-in Zod schema, enforced by the bus before `execute` runs. */
+  schema?: ZodType<unknown>
   /** Mutate + commit; return the primary aggregate id for the result envelope. */
   execute: (ctx: CommandExecContext<TPayload>) => Promise<Id | void>
 }
@@ -40,6 +43,7 @@ export function defineCommand<TPayload extends AttributeBag = AttributeBag>(
   return {
     commandType: spec.commandType,
     requiredPermission: spec.requiredPermission,
+    schema: spec.schema,
     async handle(command: Command<TPayload>, deps: KernelDeps): Promise<CommandResult> {
       const allCommitted: StoredEvent[] = []
       const ctx: CommandExecContext<TPayload> = {

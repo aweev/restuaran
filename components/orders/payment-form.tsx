@@ -23,6 +23,7 @@ export function PaymentForm({ orderId, totalDue, totalPaid }: PaymentFormProps) 
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash")
   const [amount, setAmount] = useState<number>(totalDue - totalPaid)
   const [reference, setReference] = useState("")
+  const [paymentMethodId, setPaymentMethodId] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isSplitPayment, setIsSplitPayment] = useState(false)
 
@@ -55,6 +56,8 @@ export function PaymentForm({ orderId, totalDue, totalPaid }: PaymentFormProps) 
         amount,
         reference: reference || undefined,
         timestamp: new Date().toISOString(),
+        paymentMethodId: paymentMethodId || undefined,
+        gateway: paymentMethodId ? "stripe" : undefined,
       })
 
       toast({
@@ -66,6 +69,7 @@ export function PaymentForm({ orderId, totalDue, totalPaid }: PaymentFormProps) 
       if (isSplitPayment && totalPaid + amount < totalDue) {
         setAmount(totalDue - (totalPaid + amount))
         setReference("")
+        setPaymentMethodId("")
       }
     } catch (error) {
       console.error("Error processing payment:", error)
@@ -80,6 +84,7 @@ export function PaymentForm({ orderId, totalDue, totalPaid }: PaymentFormProps) 
   }
 
   const remainingBalance = totalDue - totalPaid
+  const isCardPayment = ["credit", "debit"].includes(paymentMethod)
 
   return (
     <form onSubmit={handleSubmit} className="w-full space-y-4">
@@ -145,6 +150,21 @@ export function PaymentForm({ orderId, totalDue, totalPaid }: PaymentFormProps) 
           </div>
         </RadioGroup>
       </div>
+
+      {isCardPayment && (
+        <div className="space-y-2">
+          <Label htmlFor="paymentMethodId">Stripe Payment Method ID (Optional)</Label>
+          <Input
+            id="paymentMethodId"
+            placeholder="pm_... (from Stripe Terminal)"
+            value={paymentMethodId}
+            onChange={(e) => setPaymentMethodId(e.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            Leave empty to use simulated provider. Enter a Stripe payment method ID for real card processing.
+          </p>
+        </div>
+      )}
 
       <div className="space-y-2">
         <Label htmlFor="reference">Reference (Optional)</Label>

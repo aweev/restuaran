@@ -15,6 +15,9 @@ import { ExportButtons } from "@/components/reports/export-buttons"
 import { exportOrdersToCSV } from "@/lib/export-utils"
 import { format, subDays } from "date-fns"
 import { Loader2 } from "lucide-react"
+import Link from "next/link"
+import { Button } from "@/components/ui/button"
+import { EmptyState } from "@/components/pos/ui-states"
 
 export default function ReportsPage() {
   const { state: orderState, fetchOrders } = useOrder()
@@ -88,6 +91,19 @@ export default function ReportsPage() {
         </div>
       </div>
 
+      {orderState.orders.length === 0 ? (
+        <EmptyState
+          title="No sales to report yet"
+          hint="Reports build themselves from closed orders — ring your first order and come back."
+          action={<Button size="sm" asChild><Link href="/dashboard/orders/new">Create first order</Link></Button>}
+        />
+      ) : filteredOrders.length === 0 ? (
+        <EmptyState
+          title="No orders in this period"
+          hint="Widen the date range to see sales."
+        />
+      ) : (
+      <>
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -199,6 +215,8 @@ export default function ReportsPage() {
           </Card>
         </TabsContent>
       </Tabs>
+      </>
+      )}
     </div>
   )
 }

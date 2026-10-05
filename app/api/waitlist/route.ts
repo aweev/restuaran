@@ -1,26 +1,23 @@
 import { NextResponse } from "next/server"
-import prisma from "@/lib/prisma"
 import { withAuth, type AuthenticatedRequest } from "@/middleware/auth-middleware"
+import { sqlWrite, audit, toNum } from "@/lib/db-helpers"
 import { z } from "zod"
 
-// GET - Fetch all wait list entries
+function shape(row: Record<string, unknown>) {
+  return { ...row, partySize: toNum(row.partySize), estimatedWaitTime: toNum(row.estimatedWaitTime) }
+}
+
 export const GET = withAuth(async () => {
   try {
-    const waitList = await prisma.waitList.findMany({
-      orderBy: {
-        createdAt: "asc",
-      },
-    })
-
-    return NextResponse.json(waitList)
+    const rows = await sqlWrite(`SELECT * FROM "WaitlistEntry" ORDER BY "createdAt" ASC`)
+    return NextResponse.json(rows.map(shape))
   } catch (error) {
-    console.error("Error fetching wait list:", error)
+    console.error("[waitlist] list failed:", error)
     return NextResponse.json({ error: "Failed to fetch wait list" }, { status: 500 })
   }
 })
 
-// Schema for creating wait list entries
-const createWaitListSchema = z.object({
+const createSchema = z.object({
   customerName: z.string().min(1, "Customer name is required"),
   phoneNumber: z.string().optional(),
   partySize: z.number().int().positive(),
@@ -28,48 +25,41 @@ const createWaitListSchema = z.object({
   notes: z.string().optional(),
 })
 
-// POST - Create a new wait list entry
 export const POST = withAuth(async (req: AuthenticatedRequest) => {
   try {
-    const body = await req.json()
+    const validated = createSchema.parse(await req.json())
+    const id = crypto.randomUUID()
 
-    // Validate request body
-    const validatedData = createWaitListSchema.parse(body)
+    const rows = await sqlWrite(
+      `INSERT INTO "WaitlistEntry"
+         (id, "customerName", "phoneNumber", "partySize", "estimatedWaitTime", notes, notified)
+       VALUES ($1,$2,$3,$4,$5,$6,FALSE)
+       RETURNING *`,
+      [
+        id,
+        validated.customerName,
+        validated.phoneNumber || null,
+        validated.partySize,
+        validated.estimatedWaitTime,
+        validated.notes || null,
+      ],
+    )
 
-    // Create wait list entry
-    const waitListEntry = await prisma.waitList.create({
-      data: {
-        customerName: validatedData.customerName,
-        phoneNumber: validatedData.phoneNumber || "",
-        partySize: validatedData.partySize,
-        estimatedWaitTime: validatedData.estimatedWaitTime,
-        notes: validatedData.notes || "",
-        notified: false,
-      },
+    await audit({
+      userId: req.user.sub,
+      action: "CREATE",
+      entity: "WAITLIST",
+      entityId: id,
+      details: { customerName: validated.customerName, partySize: validated.partySize },
     })
 
-    // Log the action
-    await prisma.auditLog.create({
-      data: {
-        userId: req.user.sub,
-        action: "CREATE",
-        entity: "WAITLIST",
-        entityId: waitListEntry.id,
-        details: {
-          customerName: waitListEntry.customerName,
-          partySize: waitListEntry.partySize,
-        },
-      },
-    })
-
-    return NextResponse.json(waitListEntry, { status: 201 })
+    return NextResponse.json(shape(rows[0] ?? {}), { status: 201 })
   } catch (error) {
-    console.error("Error creating wait list entry:", error)
-
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: "Validation error", details: error.errors }, { status: 400 })
     }
-
+    console.error("[waitlist] create failed:", error)
     return NextResponse.json({ error: "Failed to create wait list entry" }, { status: 500 })
   }
 })
+

@@ -4,7 +4,7 @@ import { defineCommand } from "@/kernel/commands/define-command"
 import { QueryHandler } from "@/kernel/queries/query-bus"
 import { ReservationAggregate, ReservationState } from "@/kernel/aggregates/reservation.aggregate"
 import { RosModule, ModuleRuntime } from "@/kernel/modules/module-registry"
-import { defineProjection, Projection } from "@/kernel/projections/projection"
+import { defineProjection, Projection, maybePaginate } from "@/kernel/projections/projection"
 
 export interface ReservationBoardRow {
   id: string
@@ -15,6 +15,11 @@ export interface ReservationBoardRow {
   status: string
   tableId: string | null
   source: string
+  /** Contact + requests ride the board so the host stand needs no second
+   *  query. Gated by the same `reservation:view` capability as the board. */
+  phone: string | null
+  email: string | null
+  specialRequests: string | null
 }
 
 export interface ReservationBoardState extends AttributeBag {
@@ -37,6 +42,7 @@ export function reservationBoardProjection(
         "reservation.cancelled",
         "reservation.noShow",
         "reservation.rescheduled",
+        "reservation.detailsUpdated",
       ],
       reduce: (state, event: StoredEvent): ReservationBoardState => {
         const rows = [...state.rows]
@@ -45,7 +51,7 @@ export function reservationBoardProjection(
         const base: ReservationBoardRow =
           idx >= 0
             ? rows[idx]
-            : { id: event.aggregateId, customerName: "", partySize: 0, date: "", time: "", status: "pending", tableId: null, source: "pos" }
+            : { id: event.aggregateId, customerName: "", partySize: 0, date: "", time: "", status: "pending", tableId: null, source: "pos", phone: null, email: null, specialRequests: null }
         const next: ReservationBoardRow = { ...base }
         if (event.eventType === "reservation.booked") {
           next.customerName = String(p.customerName ?? "")
@@ -54,6 +60,15 @@ export function reservationBoardProjection(
           next.time = String(p.time ?? "")
           next.source = String(p.source ?? "pos")
           next.status = "pending"
+          next.phone = (p.phone as string) ?? null
+          next.email = (p.email as string) ?? null
+          next.specialRequests = (p.specialRequests as string) ?? null
+        }
+        if (event.eventType === "reservation.detailsUpdated") {
+          if (p.partySize !== undefined) next.partySize = Number(p.partySize)
+          if (p.phone !== undefined) next.phone = (p.phone as string) ?? null
+          if (p.email !== undefined) next.email = (p.email as string) ?? null
+          if (p.specialRequests !== undefined) next.specialRequests = (p.specialRequests as string) ?? null
         }
         if (p.status) next.status = String(p.status)
         if (p.tableId !== undefined) next.tableId = (p.tableId as string) ?? null
@@ -62,12 +77,34 @@ export function reservationBoardProjection(
         if (idx >= 0) rows[idx] = next
         else rows.push(next)
         rows.sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`))
-        return { rows }
+        return { rows: evictReservationsBoard(rows) }
       },
     },
     store,
     tenant
   )
+}
+
+const RESERVATIONS_BOARD_MAX_ROWS = 2000;
+
+/** Keep only 2000 rows; terminal states (completed/cancelled/no-show) go first, oldest first. */
+function evictReservationsBoard(rows: ReservationBoardRow[]): ReservationBoardRow[] {
+  if (rows.length <= RESERVATIONS_BOARD_MAX_ROWS) return rows
+  const overflow = rows.length - RESERVATIONS_BOARD_MAX_ROWS
+  const terminal = new Set(["completed", "cancelled", "noShow", "no_show"])
+  const order: number[] = rows
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => {
+      const ta = terminal.has(a.r.status) ? 0 : 1
+      const tb = terminal.has(b.r.status) ? 0 : 1
+      if (ta !== tb) return ta - tb
+      const ka = `${a.r.date} ${a.r.time}`
+      const kb = `${b.r.date} ${b.r.time}`
+      return ka < kb ? -1 : ka > kb ? 1 : a.i - b.i
+    })
+    .map((x) => x.i)
+  const drop = new Set(order.slice(0, overflow))
+  return rows.filter((_, i) => !drop.has(i))
 }
 
 // ---------------------------------------------------------------- commands
@@ -185,6 +222,25 @@ const reschedule = defineCommand({
   },
 })
 
+const updateDetails = defineCommand({
+  commandType: "reservation.updateDetails",
+  requiredPermission: "reservation:manage",
+  async execute(ctx) {
+    const id = String(ctx.payload.reservationId)
+    const agg = await ctx.load<ReservationAggregate>(ReservationAggregate.TYPE, id)
+    agg.updateDetails(ctx.actor, {
+      ...(ctx.payload.partySize !== undefined ? { partySize: Number(ctx.payload.partySize) } : {}),
+      ...(ctx.payload.phone !== undefined ? { phone: ctx.payload.phone ? String(ctx.payload.phone) : null } : {}),
+      ...(ctx.payload.email !== undefined ? { email: ctx.payload.email ? String(ctx.payload.email) : null } : {}),
+      ...(ctx.payload.specialRequests !== undefined
+        ? { specialRequests: ctx.payload.specialRequests ? String(ctx.payload.specialRequests) : null }
+        : {}),
+    })
+    await ctx.commit(agg)
+    return id
+  },
+})
+
 // ---------------------------------------------------------------- queries
 
 function overlaps(aStart: string, aMins: number, bStart: string, bMins: number): boolean {
@@ -202,8 +258,31 @@ const getReservation: QueryHandler = {
   requiredPermission: "reservation:view",
   async handle(params, ctx) {
     const agg = await ctx.repository.load<ReservationAggregate>(ReservationAggregate.TYPE, ctx.tenant, String(params.reservationId))
-    return { id: agg.id, version: agg.version, state: agg.state }
+    const canSeePii = ctx.actor?.permissions.includes("customer:view_pii") ?? false
+    if (canSeePii) return { id: agg.id, version: agg.version, state: agg.state }
+    const s = agg.state
+    return {
+      id: agg.id,
+      version: agg.version,
+      state: {
+        ...s,
+        phone: s.phone == null ? null : s.phone.length > 4 ? `•••${s.phone.slice(-4)}` : "•••",
+        email: s.email == null ? null : s.email.includes("@") ? `${s.email.slice(0, 1)}•••@${s.email.split("@")[1]}` : "•••",
+        // Free-text requests routinely carry dietary/medical detail: redact
+        // like contact PII rather than leaking it to every host screen.
+        specialRequests: s.specialRequests == null ? null : "•••",
+      },
+    }
   },
+}
+
+function maskReservationRow(row: ReservationBoardRow, canSeePii: boolean): ReservationBoardRow {
+  if (canSeePii) return row
+  const maskPhone = (v: string | null) =>
+    v == null ? null : v.length > 4 ? `•••${v.slice(-4)}` : "•••"
+  const maskEmail = (v: string | null) =>
+    v == null ? null : v.includes("@") ? `${v.slice(0, 1)}•••@${v.split("@")[1]}` : "•••"
+  return { ...row, phone: maskPhone(row.phone), email: maskEmail(row.email), specialRequests: row.specialRequests == null ? null : "•••" }
 }
 
 const listReservationsForDate: QueryHandler = {
@@ -211,7 +290,11 @@ const listReservationsForDate: QueryHandler = {
   requiredPermission: "reservation:view",
   async handle(params, ctx) {
     const board = ctx.projections.get<ReservationBoardState>("reservations.board").state
-    return board.rows.filter((r) => r.date === String(params.date))
+    const rows = board.rows.filter((r) => r.date === String(params.date))
+    // PII gate (mirrors customers.board: board omits nothing by itself, so the
+    // query masks contact details unless the actor holds customer:view_pii).
+    const canSeePii = ctx.actor?.permissions.includes("customer:view_pii") ?? false
+    return maybePaginate(rows.map((r) => maskReservationRow(r, canSeePii)), params)
   },
 }
 
@@ -223,11 +306,12 @@ export function reservationsModule(): RosModule {
     name: "Reservations",
     version: "1.0.0",
     capabilities: {
-      commands: ["reservation.book", "reservation.confirm", "reservation.seat", "reservation.complete", "reservation.cancel", "reservation.markNoShow", "reservation.reschedule"],
+      commands: ["reservation.book", "reservation.confirm", "reservation.seat", "reservation.complete", "reservation.cancel", "reservation.markNoShow", "reservation.reschedule", "reservation.updateDetails"],
       queries: ["get.reservation", "list.reservations.onDate"],
       eventTypes: [
         "reservation.booked", "reservation.confirmed", "reservation.seated",
         "reservation.completed", "reservation.cancelled", "reservation.noShow", "reservation.rescheduled",
+        "reservation.detailsUpdated",
       ],
     },
     lifecycle: {
@@ -242,6 +326,7 @@ export function reservationsModule(): RosModule {
         runtime.commands.register(cancel)
         runtime.commands.register(noShow)
         runtime.commands.register(reschedule)
+        runtime.commands.register(updateDetails)
         runtime.queries.register(getReservation)
         runtime.queries.register(listReservationsForDate)
       },

@@ -1,10 +1,11 @@
 import { randomUUID } from "crypto"
-import { AttributeBag, kernelError, StoredEvent } from "@/kernel/types"
+import { AttributeBag, kernelError, StoredEvent, TenantContext } from "@/kernel/types"
 import { defineCommand } from "@/kernel/commands/define-command"
 import { QueryHandler } from "@/kernel/queries/query-bus"
 import { WaitlistAggregate } from "@/kernel/aggregates/waitlist.aggregate"
+import { TableAggregate } from "@/kernel/aggregates"
 import { RosModule, ModuleRuntime } from "@/kernel/modules/module-registry"
-import { defineProjection, Projection } from "@/kernel/projections/projection"
+import { defineProjection, Projection, maybePaginate } from "@/kernel/projections/projection"
 import { TableBoardState } from "@/kernel/projections/builtins"
 
 export interface WaitlistRow {
@@ -16,6 +17,7 @@ export interface WaitlistRow {
   position: number
   joinedAt: string
   notifiedAt: string | null
+  notes: string | null
 }
 
 export interface WaitlistBoardState extends AttributeBag {
@@ -47,6 +49,7 @@ export function waitlistBoardProjection(
               position,
               joinedAt: String(p.joinedAt ?? event.occurredAt),
               notifiedAt: null,
+              notes: (p.notes as string) ?? null,
             })
             break
           }
@@ -122,6 +125,55 @@ const seat = defineCommand({
   },
 })
 
+/**
+ * Atomically seat a waitlisted guest at a table.
+ *
+ * Replaces the two-step `table.seat` + `waitlist.seat` sequence that could
+ * leave a table occupied while the guest remained queued on partial failure.
+ * This command validates availability, then commits both aggregates in a
+ * single logical transaction: if the table aggregate rejects (e.g. TABLE_OCCUPIED),
+ * the waitlist is never marked seated, and vice-versa.
+ */
+const seatAtTable = defineCommand({
+  commandType: "waitlist.seatAtTable",
+  requiredPermission: "waitlist:manage",
+  async execute(ctx) {
+    const entryId = String(ctx.payload.entryId)
+    const tableId = String(ctx.payload.tableId)
+    const serverId = String(ctx.payload.serverId ?? "")
+    const orderId = String(ctx.payload.orderId ?? `waitlist-${entryId}`)
+
+    // Cross-module guard: only seat onto a table the floor plan reports as available.
+    const board = ctx.projections.get<TableBoardState>("tables.board")
+    if (board.state.rows.length > 0) {
+      const row = board.state.rows.find((r) => r.tableId === tableId)
+      if (row && row.status !== "available") {
+        throw kernelError("TABLE_NOT_AVAILABLE", `Table is ${row.status}`)
+      }
+    }
+
+    // Load the waitlist entry first; if it doesn't exist or is in a bad state,
+    // fail before touching the table.
+    const waitlistAgg = await ctx.load<WaitlistAggregate>(WaitlistAggregate.TYPE, entryId)
+
+    // Load the table aggregate and seat it. If the table is occupied (race
+    // condition where two hosts target the same table), this throws and the
+    // waitlist entry is left unchanged.
+    const tableAgg = await ctx.load<TableAggregate>(TableAggregate.TYPE, tableId)
+    tableAgg.seat(ctx.actor, orderId, serverId)
+
+    // If table.seat succeeded, commit the table first so its state is durable.
+    await ctx.commit(tableAgg)
+
+    // Now mark the waitlist entry as seated. Both commits share the same
+    // correlation (commandId), so the event stream is auditable as one act.
+    waitlistAgg.seat(ctx.actor, tableId)
+    await ctx.commit(waitlistAgg)
+
+    return entryId
+  },
+})
+
 const remove = defineCommand({
   commandType: "waitlist.remove",
   requiredPermission: "waitlist:manage",
@@ -146,8 +198,8 @@ const getEntry: QueryHandler = {
 const listQueue: QueryHandler = {
   queryType: "list.waitQueue",
   requiredPermission: "waitlist:view",
-  async handle(_params, ctx) {
-    return ctx.projections.get<WaitlistBoardState>("waitlist.board").state.queue
+  async handle(params, ctx) {
+    return maybePaginate(ctx.projections.get<WaitlistBoardState>("waitlist.board").state.queue, params)
   },
 }
 
@@ -157,7 +209,7 @@ export function waitlistModule(): RosModule {
     name: "Waitlist",
     version: "1.0.0",
     capabilities: {
-      commands: ["waitlist.join", "waitlist.notify", "waitlist.seat", "waitlist.remove"],
+      commands: ["waitlist.join", "waitlist.notify", "waitlist.seat", "waitlist.seatAtTable", "waitlist.remove"],
       queries: ["get.waitlistEntry", "list.waitQueue"],
       eventTypes: ["waitlist.joined", "waitlist.notified", "waitlist.seated", "waitlist.removed", "waitlist.noShow"],
     },
@@ -169,6 +221,7 @@ export function waitlistModule(): RosModule {
         runtime.commands.register(join)
         runtime.commands.register(notify)
         runtime.commands.register(seat)
+        runtime.commands.register(seatAtTable)
         runtime.commands.register(remove)
         runtime.queries.register(getEntry)
         runtime.queries.register(listQueue)

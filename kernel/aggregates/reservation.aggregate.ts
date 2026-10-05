@@ -123,6 +123,32 @@ export class ReservationAggregate extends Aggregate<ReservationState> {
     this.raise("reservation.rescheduled", { date, time, status: this.state.status === "seated" ? "confirmed" : this.state.status }, actor)
   }
 
+  /**
+   * Edit contact/party details without moving the booking through its
+   * lifecycle. Status, date and time are deliberately excluded: those travel
+   * through cancel/confirm/seat/complete and reschedule so every transition
+   * stays an auditable event.
+   */
+  updateDetails(actor: ActorContext, patch: {
+    partySize?: number
+    phone?: string | null
+    email?: string | null
+    specialRequests?: string | null
+  }): void {
+    if (TERMINAL.includes(this.state.status)) {
+      throw kernelError("BAD_RESERVATION_STATE", `Cannot edit a ${this.state.status} reservation`)
+    }
+    if (patch.partySize !== undefined && (!Number.isInteger(patch.partySize) || patch.partySize <= 0)) {
+      throw kernelError("INVALID_RESERVATION", "Party size must be a positive integer")
+    }
+    this.raise("reservation.detailsUpdated", {
+      ...(patch.partySize !== undefined ? { partySize: patch.partySize } : {}),
+      ...(patch.phone !== undefined ? { phone: patch.phone } : {}),
+      ...(patch.email !== undefined ? { email: patch.email } : {}),
+      ...(patch.specialRequests !== undefined ? { specialRequests: patch.specialRequests } : {}),
+    }, actor)
+  }
+
   isActive(): boolean {
     return !TERMINAL.includes(this.state.status)
   }
@@ -146,7 +172,8 @@ export class ReservationAggregate extends Aggregate<ReservationState> {
       case "reservation.completed":
       case "reservation.cancelled":
       case "reservation.noShow":
-      case "reservation.rescheduled": {
+      case "reservation.rescheduled":
+      case "reservation.detailsUpdated": {
         const next = { ...s, ...event.payload } as ReservationState
         return {
           ...next,

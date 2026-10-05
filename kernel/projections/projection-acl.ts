@@ -15,6 +15,14 @@ export const PROJECTION_CAPABILITIES: Record<string, string> = {
   "waitlist.board": "waitlist:view",
   "menu.board": "menu:view",
   "platform.orders": "order:view",
+  "orders.board": "order:view",
+  "sales.board": "order:view",
+  "staff.board": "staff:view",
+  "customers.board": "customer:view",
+  "giftcards.board": "giftcard:view",
+  "promotions.board": "promotion:view",
+  "venues.board": "venue:view",
+  "webhooks.endpoints": "integration:view",
 }
 
 export function requiredCapabilityFor(projectionName: string): string {

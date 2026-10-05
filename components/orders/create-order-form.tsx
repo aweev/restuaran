@@ -18,11 +18,11 @@ import { toast } from "@/components/ui/use-toast"
 import { Loader2 } from "lucide-react"
 import { OrderItemList } from "./order-item-list"
 import { ItemCustomizationModal } from "./item-customization-modal"
-import type { MenuItem } from "@/types"
+import type { MenuItem, DiningMode } from "@/types"
 
 export function CreateOrderForm() {
   const router = useRouter()
-  const { state: cartState, clearCart } = useCart()
+  const { state: cartState, clearCart, setDiningMode, setTable } = useCart()
   const { createOrder } = useOrder()
   const { state: authState } = useAuth()
   const { state: tableState } = useTable()
@@ -54,7 +54,6 @@ export function CreateOrderForm() {
         cartState.diningMode,
         authState.user?.id || "",
         cartState.subtotal,
-        cartState.tax,
         cartState.discount,
         cartState.total,
         notes,
@@ -96,10 +95,10 @@ export function CreateOrderForm() {
             <div className="space-y-2">
               <Label htmlFor="diningMode">Dining Mode</Label>
               <RadioGroup
-                defaultValue={cartState.diningMode}
+                value={cartState.diningMode}
                 className="flex space-x-4"
-                onValueChange={(_value) => {
-                  // This would call setDiningMode from the cart context
+                onValueChange={(value) => {
+                  void setDiningMode(value as DiningMode)
                 }}
               >
                 <div className="flex items-center space-x-2">
@@ -124,8 +123,8 @@ export function CreateOrderForm() {
                   id="table"
                   className="w-full rounded-md border border-input bg-background px-3 py-2"
                   value={cartState.tableId || ""}
-                  onChange={(_e) => {
-                    // This would call setTable from the cart context
+                  onChange={(e) => {
+                    void setTable(e.target.value)
                   }}
                 >
                   <option value="">Select a table</option>
@@ -170,10 +169,6 @@ export function CreateOrderForm() {
               <div className="flex justify-between">
                 <span>Subtotal:</span>
                 <span>${cartState.subtotal.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Tax ({((cartState.tax / cartState.subtotal) * 100).toFixed(0)}%):</span>
-                <span>${cartState.tax.toFixed(2)}</span>
               </div>
               {cartState.discount > 0 && (
                 <div className="flex justify-between text-red-500">

@@ -1,78 +1,74 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { hashPassword, generateToken, registerSchema } from "@/lib/auth-utils"
-import prisma from "@/lib/prisma"
-import { ZodError } from "zod"
+import { signTokenPair, setAuthCookies } from "@/lib/jwt"
+import { hash } from "bcrypt"
+import { one, sqlWrite, audit } from "@/lib/db-helpers"
+import { z, ZodError } from "zod"
+
+const registerSchema = z.object({
+  name: z.string().min(3, "Name must be at least 3 characters"),
+  email: z.string().email("Invalid email address"),
+  password: z.string().min(8, "Password must be at least 8 characters"),
+  role: z.enum(["manager", "host", "waiter", "cashier", "bartender", "kitchen"]),
+  phone: z.string().optional(),
+  address: z.string().optional(),
+})
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-
-    // Validate request body
     const { name, email, password, role, phone, address } = registerSchema.parse(body)
+    const normalizedEmail = email.toLowerCase().trim()
 
-    // Check if email already exists
-    const existingUser = await prisma.user.findUnique({
-      where: { email },
-    })
-
-    if (existingUser) {
+    const existing = await one(`SELECT id FROM "User" WHERE LOWER(email) = $1`, [normalizedEmail])
+    if (existing) {
       return NextResponse.json({ error: "Email already in use" }, { status: 400 })
     }
 
-    // Hash password
-    const hashedPassword = await hashPassword(password)
+    const hashedPassword = await hash(password, 10)
+    const id = crypto.randomUUID()
 
-    // Create new user
-    const user = await prisma.user.create({
-      data: {
-        name,
-        email,
-        password: hashedPassword,
-        role,
-        phone,
-        address,
-        isActive: true,
-        hireDate: new Date(),
-      },
+    const rows = await sqlWrite(
+      `INSERT INTO "User" (id, name, email, password, role, phone, address, "isActive", "hireDate")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, NOW())
+       RETURNING id, name, email, role, avatar, phone, address, "hireDate", "isActive", "lastLogin", "customPermissions"`,
+      [id, name, normalizedEmail, hashedPassword, role, phone ?? null, address ?? null],
+    )
+
+    const user = rows[0]
+    if (!user) throw new Error("User insert returned no row")
+
+    // Sign with the same token-pair helper the login route uses, so tokens
+    // minted at registration verify against the same secret/claims.
+    const { accessToken, refreshToken } = await signTokenPair({
+      sub: user.id as string,
+      email: user.email as string,
+      role: user.role as string,
+      name: user.name as string,
     })
 
-    // Generate JWT token
-    const token = generateToken(user.id, user.email, user.role)
-
-    // Log the registration action
-    await prisma.auditLog.create({
-      data: {
-        userId: user.id,
-        action: "REGISTER",
-        entity: "USER",
-        entityId: user.id,
-        details: { email: user.email, role: user.role },
-      },
+    await audit({
+      userId: user.id as string,
+      action: "REGISTER",
+      entity: "USER",
+      entityId: user.id as string,
+      details: { email: user.email, role: user.role },
     })
 
-    // Return user data and token
-    return NextResponse.json({
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        avatar: user.avatar,
-        phone: user.phone,
-        address: user.address,
-        hireDate: user.hireDate,
-        isActive: user.isActive,
-        customPermissions: user.customPermissions,
-      },
-      token,
-    })
+    const response = NextResponse.json({ user, accessToken }, { status: 201 })
+    setAuthCookies(response, accessToken, refreshToken)
+    return response
   } catch (error) {
-    console.error("Registration error:", error)
-
     if (error instanceof ZodError) {
-      return NextResponse.json({ error: "Validation error", details: error.errors }, { status: 400 })
+      return NextResponse.json(
+        { error: "Validation error", details: error.errors },
+        { status: 400 },
+      )
     }
-
-    return NextResponse.json({ error: "An error occurred during registration" }, { status: 500 })
+    console.error("[auth] registration failed:", error)
+    return NextResponse.json(
+      { error: "An error occurred during registration" },
+      { status: 500 },
+    )
   }
 }
+

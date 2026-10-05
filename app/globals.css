@@ -1,98 +1,301 @@
 @import "tailwindcss";
 
+/* ===========================================================================
+   Restaurant POS — design tokens
+   This file is the single source of truth for the visual system. The orphaned
+   TypeScript token file under src/design-system/ has been removed: with
+   Tailwind v4 the cascade layer is the right home for these, and a parallel
+   JS copy could not stay in sync with it.
+
+   Three surfaces share one token set and differ only by intent:
+     data-surface="foh"  (default)  front of house — warm, appetising
+     data-surface="kds"             kitchen display — dark, urgent, gloved hands
+     data-surface="qr"              guest QR — thumb-first, image-forward
+   =========================================================================== */
+
 @theme {
+  /* --- Neutrals ---------------------------------------------------------- */
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
-
   --color-card: hsl(var(--card));
   --color-card-foreground: hsl(var(--card-foreground));
-
   --color-popover: hsl(var(--popover));
   --color-popover-foreground: hsl(var(--popover-foreground));
-
-  --color-primary: hsl(var(--primary));
-  --color-primary-foreground: hsl(var(--primary-foreground));
-
-  --color-secondary: hsl(var(--secondary));
-  --color-secondary-foreground: hsl(var(--secondary-foreground));
-
   --color-muted: hsl(var(--muted));
   --color-muted-foreground: hsl(var(--muted-foreground));
-
   --color-accent: hsl(var(--accent));
   --color-accent-foreground: hsl(var(--accent-foreground));
-
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
   --color-destructive: hsl(var(--destructive));
   --color-destructive-foreground: hsl(var(--destructive-foreground));
-
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
 
-  --radius-radius: var(--radius);
+  /* `primary` is retained as an alias of the brand so the many existing
+     `bg-primary` / `text-primary-foreground` call sites keep working while
+     resolving to copper rather than shadcn's stock green. */
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+
+  /* --- Brand -------------------------------------------------------------
+     Copper/fig rather than the stock shadcn green. Warm hues read as
+     hospitable and keep food photography from picking up a colour cast. */
+  --color-brand: hsl(var(--brand));
+  --color-brand-foreground: hsl(var(--brand-foreground));
+  --color-brand-subtle: hsl(var(--brand-subtle));
+  --color-brand-strong: hsl(var(--brand-strong));
+
+  /* --- Semantic status ---------------------------------------------------
+     One consistent colour language shared by tables, orders and the KDS, so
+     "over target" or "needs bussing" is legible across the room. */
+  --color-status-available: hsl(var(--status-available));
+  --color-status-occupied: hsl(var(--status-occupied));
+  --color-status-reserved: hsl(var(--status-reserved));
+  --color-status-dirty: hsl(var(--status-dirty));
+  --color-status-out-of-service: hsl(var(--status-out-of-service));
+  --color-status-pending: hsl(var(--status-pending));
+  --color-status-preparing: hsl(var(--status-preparing));
+  --color-status-ready: hsl(var(--status-ready));
+  --color-status-served: hsl(var(--status-served));
+  --color-status-completed: hsl(var(--status-completed));
+  --color-status-cancelled: hsl(var(--status-cancelled));
+
+  /* --- Elevation --------------------------------------------------------- */
+  --shadow-elev-1: 0 1px 2px 0 hsl(var(--shadow-color) / 0.06), 0 1px 3px 0 hsl(var(--shadow-color) / 0.08);
+  --shadow-elev-2: 0 4px 12px -2px hsl(var(--shadow-color) / 0.10), 0 2px 6px -2px hsl(var(--shadow-color) / 0.06);
+  --shadow-elev-3: 0 12px 28px -6px hsl(var(--shadow-color) / 0.14), 0 6px 12px -6px hsl(var(--shadow-color) / 0.08);
+  --shadow-elev-4: 0 24px 48px -12px hsl(var(--shadow-color) / 0.20), 0 10px 20px -10px hsl(var(--shadow-color) / 0.10);
+
+  /* --- Motion ------------------------------------------------------------
+     One grammar: fast entrances, faster exits, no bounce. */
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out-quad: cubic-bezier(0.45, 0, 0.55, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --duration-instant: 80ms;
+  --duration-fast: 140ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+
+  /* --- Radius ------------------------------------------------------------
+     The old file declared `--radius-radius: var(--radius)`, which generates
+     no utility. This is the ladder shadcn/Tailwind actually consumes. */
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 6px);
+  --radius-2xl: calc(var(--radius) + 10px);
 }
 
+
 @layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+  /* ---------------------------------------------------------------------
+     FRONT OF HOUSE (default) — warm paper, copper accents
+     --------------------------------------------------------------------- */
+  :root,
+  [data-surface="foh"] {
+    --background: 30 30% 98.5%;
+    --foreground: 24 18% 12%;
 
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 24 18% 12%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
+    --popover-foreground: 24 18% 12%;
 
-    --primary: 142.1 76.2% 36.3%;
-    --primary-foreground: 355.7 100% 97.3%;
+    /* Copper. */
+    --brand: 22 72% 44%;
+    --brand-foreground: 30 60% 98%;
+    --brand-subtle: 28 60% 94%;
+    --brand-strong: 18 78% 34%;
 
-    --secondary: 142.1 76.2% 36.3%;
-    --secondary-foreground: 355.7 100% 97.3%;
+    --primary: var(--brand);
+    --primary-foreground: var(--brand-foreground);
 
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    --secondary: 30 24% 92%;
+    --secondary-foreground: 24 20% 20%;
 
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    --muted: 30 20% 94%;
+    --muted-foreground: 25 10% 42%;
 
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
+    --accent: 30 24% 92%;
+    --accent-foreground: 24 22% 16%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 142.1 76.2% 36.3%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
 
-    --radius: 0.5rem;
+    --border: 30 16% 87%;
+    --input: 30 16% 87%;
+    --ring: var(--brand);
+
+    --shadow-color: 25 40% 18%;
+
+    /* Status — shared across tables, orders and the KDS. */
+    --status-available: 152 62% 34%;
+    --status-occupied: 350 74% 48%;
+    --status-reserved: 265 60% 52%;
+    --status-dirty: 38 92% 46%;
+    --status-out-of-service: 220 9% 46%;
+    --status-pending: 38 92% 46%;
+    --status-preparing: 214 84% 48%;
+    --status-ready: 152 62% 38%;
+    --status-served: 187 72% 34%;
+    --status-completed: 220 12% 46%;
+    --status-cancelled: 350 70% 52%;
+
+    --radius: 0.625rem;
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
+    --background: 24 16% 8%;
+    --foreground: 30 20% 96%;
 
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
+    --card: 24 14% 11%;
+    --card-foreground: 30 20% 96%;
 
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
+    --popover: 24 15% 10%;
+    --popover-foreground: 30 20% 96%;
 
-    --primary: 142.1 70.6% 45.3%;
-    --primary-foreground: 144.3 61.6% 98%;
+    --brand: 26 78% 55%;
+    --brand-foreground: 24 30% 8%;
+    --brand-subtle: 24 20% 16%;
+    --brand-strong: 28 82% 62%;
 
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
+    --primary: var(--brand);
+    --primary-foreground: var(--brand-foreground);
 
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
+    --secondary: 24 12% 18%;
+    --secondary-foreground: 30 20% 96%;
 
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
+    --muted: 24 12% 16%;
+    --muted-foreground: 28 12% 64%;
 
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
+    --accent: 24 12% 18%;
+    --accent-foreground: 30 20% 96%;
 
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 142.1 70.6% 45.3%;
+    --destructive: 0 62% 48%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 24 12% 20%;
+    --input: 24 12% 22%;
+    --ring: var(--brand);
+
+    --shadow-color: 0 0% 0%;
+
+    --status-available: 152 52% 48%;
+    --status-occupied: 350 74% 62%;
+    --status-reserved: 265 62% 66%;
+    --status-dirty: 38 92% 58%;
+    --status-out-of-service: 220 10% 58%;
+    --status-pending: 38 92% 58%;
+    --status-preparing: 214 84% 64%;
+    --status-ready: 152 52% 52%;
+    --status-served: 187 66% 48%;
+    --status-completed: 220 10% 62%;
+    --status-cancelled: 350 70% 64%;
+  }
+
+  /* ---------------------------------------------------------------------
+     KITCHEN DISPLAY — deliberately not just "dark mode".
+     A cook works at arm's length through steam, in gloves, glancing for two
+     seconds at a time. That argues for: higher contrast than `.dark`,
+     a cool near-black that does not glare, oversized targets handled at the
+     component level, and status colours pushed brighter so they survive a
+     bright pass and a reflective screen alike.
+     --------------------------------------------------------------------- */
+  [data-surface="kds"] {
+    color-scheme: dark;
+
+    --background: 220 24% 6%;
+    --foreground: 200 20% 98%;
+
+    --card: 220 22% 9%;
+    --card-foreground: 200 20% 98%;
+
+    --popover: 220 24% 7%;
+    --popover-foreground: 200 20% 98%;
+
+    --brand: 26 90% 58%;
+    --brand-foreground: 220 30% 6%;
+    --brand-subtle: 220 18% 15%;
+    --brand-strong: 30 94% 64%;
+
+    --primary: var(--brand);
+    --primary-foreground: var(--brand-foreground);
+
+    --secondary: 220 16% 16%;
+    --secondary-foreground: 200 20% 98%;
+
+    --muted: 220 16% 14%;
+    --muted-foreground: 210 12% 70%;
+
+    --accent: 220 16% 18%;
+    --accent-foreground: 200 20% 98%;
+
+    --destructive: 0 76% 54%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 14% 22%;
+    --input: 220 14% 24%;
+    --ring: 26 90% 62%;
+
+    --shadow-color: 0 0% 0%;
+
+    /* Brighter than `.dark` on purpose: these are read at a glance. */
+    --status-available: 152 62% 52%;
+    --status-occupied: 350 82% 64%;
+    --status-reserved: 265 70% 68%;
+    --status-dirty: 40 96% 60%;
+    --status-out-of-service: 220 10% 60%;
+    --status-pending: 40 96% 60%;
+    --status-preparing: 208 92% 66%;
+    --status-ready: 152 70% 56%;
+    --status-served: 184 76% 52%;
+    --status-completed: 210 12% 64%;
+    --status-cancelled: 350 80% 66%;
+  }
+
+  /* ---------------------------------------------------------------------
+     GUEST QR — thumb-first. Lighter chrome, larger radii, softer contrast
+     so photography leads. The kitchen's neon urgency is wrong here.
+     --------------------------------------------------------------------- */
+  [data-surface="qr"] {
+    --background: 30 40% 99%;
+    --foreground: 24 20% 10%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 24 20% 10%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 24 20% 10%;
+
+    --brand: 20 76% 46%;
+    --brand-foreground: 30 60% 98%;
+    --brand-subtle: 28 64% 95%;
+    --brand-strong: 16 80% 36%;
+
+    --primary: var(--brand);
+    --primary-foreground: var(--brand-foreground);
+
+    --secondary: 30 30% 94%;
+    --secondary-foreground: 24 20% 18%;
+
+    --muted: 30 26% 95%;
+    --muted-foreground: 25 12% 40%;
+
+    --accent: 30 30% 94%;
+    --accent-foreground: 24 22% 14%;
+
+    --destructive: 0 74% 52%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 30 20% 89%;
+    --input: 30 20% 89%;
+    --ring: var(--brand);
+
+    --shadow-color: 25 45% 20%;
+    --radius: 0.875rem;
   }
 
   * {
@@ -100,5 +303,144 @@
   }
   body {
     @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+}
+
+@layer utilities {
+  /* --- Interaction ------------------------------------------------------- */
+  .pos-card-hover {
+    transition: transform var(--duration-fast) var(--ease-out-quint),
+                box-shadow var(--duration-fast) var(--ease-out-quint);
+  }
+  .pos-card-hover:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-elev-2);
+  }
+  /* Tactile acknowledgement. Glove-friendly on the KDS, so never too subtle. */
+  .pos-press {
+    transition: transform var(--duration-instant) var(--ease-out-quint);
+  }
+  .pos-press:active { transform: scale(0.98); }
+  [data-surface="kds"] .pos-press:active { transform: scale(0.96); }
+
+  /* --- Entrance motion --------------------------------------------------- */
+  .pos-fade-in { animation: pos-fade-in var(--duration-base) var(--ease-out-quint) both; }
+  .pos-rise    { animation: pos-rise var(--duration-slow) var(--ease-out-quint) both; }
+  /* Slammed in for a new ticket: fast, slight overshoot, then settle. */
+  .pos-ticket-in { animation: pos-ticket-in var(--duration-slow) var(--ease-spring) both; }
+
+  @keyframes pos-fade-in { from { opacity: 0 } to { opacity: 1 } }
+  @keyframes pos-rise {
+    from { opacity: 0; transform: translateY(6px) }
+    to   { opacity: 1; transform: none }
+  }
+  @keyframes pos-ticket-in {
+    0%   { opacity: 0; transform: translateY(-10px) scale(0.97) }
+    60%  { opacity: 1 }
+    100% { opacity: 1; transform: none }
+  }
+
+  /* --- Loading ----------------------------------------------------------- */
+  /* A travelling highlight reads as "working" far better than a static pulse. */
+  .pos-skeleton {
+    position: relative;
+    overflow: hidden;
+    background-color: hsl(var(--muted));
+  }
+  .pos-skeleton::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      hsl(var(--foreground) / 0.06),
+      transparent
+    );
+    animation: pos-shimmer 1.6s infinite;
+  }
+  @keyframes pos-shimmer { 100% { transform: translateX(100%) } }
+
+  .pos-scroll-thin { scrollbar-width: thin; scrollbar-color: hsl(var(--border)) transparent; }
+  .pos-scroll-none { scrollbar-width: none; }
+  .pos-scroll-none::-webkit-scrollbar { display: none; }
+
+  /* --- Money -------------------------------------------------------------
+     Prices must not jitter as digits change. Tabular figures are non-
+     negotiable on a POS. */
+  .pos-numeric { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+
+  /* --- Urgency -----------------------------------------------------------
+     Escalating pulse for "over target time" on the KDS and dwell warnings on
+     the floor. Paired with a colour change, never as the only signal. */
+  .pos-urgent { animation: pos-pulse var(--duration-slow) var(--ease-in-out-quad) infinite; }
+  @keyframes pos-pulse {
+    0%, 100% { opacity: 1 }
+    50%      { opacity: 0.55 }
+  }
+
+  /* --- Density ----------------------------------------------------------- */
+  [data-density="compact"] { --density-row: 2rem; --density-pad: 0.5rem; }
+  [data-density="comfortable"] { --density-row: 2.75rem; --density-pad: 0.75rem; }
+  [data-density="spacious"] { --density-row: 3.5rem; --density-pad: 1rem; }
+
+  /* --- KDS ergonomics ----------------------------------------------------
+     Minimum hit area for a cook wearing gloves, or on a touchscreen with
+     condensation on it. Applied at the surface, not per component. */
+  [data-surface="kds"] {
+    --touch-target: 3.5rem;
+  }
+  [data-surface="kds"] button,
+  [data-surface="kds"] [role="button"] {
+    min-height: var(--touch-target);
+  }
+  /* The kitchen has no use for hover affordances; it should not dim on a
+     phantom cursor left parked by a wiped-down screen. */
+  [data-surface="kds"] :where(a, button, [role="button"]):hover {
+    filter: brightness(1.08);
+  }
+
+  /* --- Guest QR ---------------------------------------------------------- */
+  [data-surface="qr"] {
+    --touch-target: 3rem;
+  }
+  [data-surface="qr"] button,
+  [data-surface="qr"] [role="button"] {
+    min-height: var(--touch-target);
   }
 }
+
+:where(:focus-visible) {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+/* A visible, high-contrast focus ring for keyboard users — never removed, only
+   restyled, so the KDS is operable without a mouse. */
+@supports selector(:focus-visible) {
+  :where(button, a, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* Urgency must survive reduced-motion; colour + weight carry it instead. */
+  .pos-urgent { animation: none; outline: 2px solid currentColor; }
+}
+
+::selection {
+  background: hsl(var(--primary) / 0.22);
+}
+

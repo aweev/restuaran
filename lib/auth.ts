@@ -1,4 +1,3 @@
-import { jwtDecode } from "jwt-decode"
 import { type User, type PermissionName, ROLE_PERMISSIONS } from "@/types/auth"
 
 interface JwtPayload {
@@ -9,14 +8,22 @@ interface JwtPayload {
   iat: number
 }
 
-export function isTokenExpired(token: string): boolean {
+function decodeExp(token: string): number | null {
   try {
-    const decoded = jwtDecode<JwtPayload>(token)
-    const currentTime = Date.now() / 1000
-    return decoded.exp < currentTime
+    const parts = token.split(".")
+    if (parts.length < 2 || !parts[1]) return null
+    const json = Buffer.from(parts[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")
+    const payload = JSON.parse(json) as Partial<JwtPayload>
+    return typeof payload.exp === "number" ? payload.exp : null
   } catch {
-    return true
+    return null
   }
+}
+
+export function isTokenExpired(token: string): boolean {
+  const exp = decodeExp(token)
+  if (exp == null) return true
+  return exp < Date.now() / 1000
 }
 
 export function getUserPermissions(user: User): PermissionName[] {

@@ -1,42 +1,38 @@
 "use client"
 
-import { createContext, useReducer, useContext, useEffect, type ReactNode } from "react"
+import { createContext, useContext, useEffect, useCallback, useMemo, useState, type ReactNode } from "react"
+import { useAuth } from "./AuthContext"
+import { useCommand, useKernel } from "@/kernel/react/kernel-provider"
+import { useFeedback, notifyWithActions, recoveryActionsFor } from "@/lib/feedback"
+import { useAttentionOptional } from "@/context/AttentionContext"
 import type { CartState, CartItem, MenuItem, DiningMode, CartModifierSelection } from "@/types"
+import { newRequestId } from "@/kernel/react/kernel-provider"
 
-// Initial state
-const initialState: CartState = {
-  items: [],
-  tableId: null,
-  customerName: null,
-  diningMode: "Dine in",
-  subtotal: 0,
-  tax: 0,
-  total: 0,
-  discount: 0,
+interface CartContextType {
+  state: CartState
+  isCreating: boolean
+  draftOrderId: string | null
+  addItem: (
+    menuItem: MenuItem,
+    quantity: number,
+    modifiers: CartModifierSelection[],
+    specialInstructions?: string,
+  ) => Promise<void>
+  removeItem: (id: string) => Promise<void>
+  updateQuantity: (id: string, quantity: number) => Promise<void>
+  clearCart: () => Promise<void>
+  setTable: (tableId: string, customerName?: string) => Promise<void>
+  setDiningMode: (mode: DiningMode) => Promise<void>
+  applyDiscount: (amount: number, code?: string) => Promise<void>
+  removeDiscount: () => Promise<void>
+  updateItemModifiers: (id: string, modifiers: CartModifierSelection[]) => Promise<void>
+  updateSpecialInstructions: (id: string, instructions: string) => Promise<void>
+  submitOrder: (serverId: string) => Promise<string>
+  syncFromStorage: () => Promise<void>
 }
 
-// Action types
-type CartAction =
-  | {
-      type: "ADD_ITEM"
-      payload: {
-        menuItem: MenuItem
-        quantity: number
-        modifiers: CartModifierSelection[]
-        specialInstructions?: string
-      }
-    }
-  | { type: "REMOVE_ITEM"; payload: string }
-  | { type: "UPDATE_QUANTITY"; payload: { id: string; quantity: number } }
-  | { type: "CLEAR_CART" }
-  | { type: "SET_TABLE"; payload: { tableId: string; customerName?: string } }
-  | { type: "SET_DINING_MODE"; payload: DiningMode }
-  | { type: "APPLY_DISCOUNT"; payload: { amount: number; code?: string } }
-  | { type: "REMOVE_DISCOUNT" }
-  | { type: "UPDATE_ITEM_MODIFIERS"; payload: { id: string; modifiers: CartModifierSelection[] } }
-  | { type: "UPDATE_SPECIAL_INSTRUCTIONS"; payload: { id: string; instructions: string } }
+const CartContext = createContext<CartContextType | undefined>(undefined)
 
-// Helper function to calculate item price with modifiers
 const calculateItemTotalPrice = (
   basePrice: number,
   quantity: number,
@@ -60,400 +56,498 @@ const calculateItemTotalPrice = (
   return (basePrice + modifierPrice) * quantity
 }
 
-// Helper function to recalculate cart totals
 const recalculateCartTotals = (
   items: CartItem[],
   discount: number,
-): { subtotal: number; tax: number; total: number } => {
+): { subtotal: number; total: number } => {
   const subtotal = items.reduce((sum, item) => sum + item.totalPrice, 0)
-  const taxRate = 0.05 // 5% tax rate
-  const tax = subtotal * taxRate
-  const total = subtotal + tax - discount
+  const total = subtotal - discount
 
-  return { subtotal, tax, total }
+  return { subtotal, total }
 }
 
-// Reducer
-const cartReducer = (state: CartState, action: CartAction): CartState => {
-  switch (action.type) {
-    case "ADD_ITEM": {
-      const { menuItem, quantity, modifiers, specialInstructions } = action.payload
+export function CartProvider({ children }: { children: ReactNode }) {
+  const { state: authState } = useAuth()
+  const { run } = useCommand()
+  const { connection, pendingCount } = useKernel()
+  const { notify } = useFeedback()
+  const attention = useAttentionOptional()
 
-      // Calculate total price including modifiers
-      const totalPrice = calculateItemTotalPrice(menuItem.price, quantity, modifiers, menuItem)
+  const reject = (title: string, err?: { message?: string; code?: string }) => {
+    const actions = recoveryActionsFor(err?.code);
+    attention?.push({ title, message: err?.message, code: err?.code, href: "/dashboard/orders" });
+    if (actions.length > 0) notifyWithActions(title, err?.message, actions);
+    else notify("error", title, err?.message);
+  };
 
-      // Check if item with same modifiers already exists
-      const existingItemIndex = state.items.findIndex((item) => {
-        if (item.menuItemId !== menuItem.id) return false
+  const [state, setState] = useState<CartState>({
+    items: [],
+    tableId: null,
+    customerName: null,
+    diningMode: "Dine in",
+    subtotal: 0,
+    total: 0,
+    discount: 0,
+  })
+  const [draftOrderId, setDraftOrderId] = useState<string | null>(null)
+  const [isCreating, setIsCreating] = useState(false)
 
-        // Check if modifiers match
-        if (item.modifiers?.length !== modifiers.length) return false
-
-        // Deep comparison of modifiers
-        const modifiersMatch = item.modifiers.every((itemMod) => {
-          const matchingMod = modifiers.find((m) => m.modifierId === itemMod.modifierId)
-          if (!matchingMod) return false
-
-          // Compare option IDs (order doesn't matter)
-          const itemOptions = [...itemMod.optionIds].sort()
-          const newOptions = [...matchingMod.optionIds].sort()
-
-          return itemOptions.length === newOptions.length && itemOptions.every((opt, i) => opt === newOptions[i])
-        })
-
-        return modifiersMatch
-      })
-
-      let updatedItems: CartItem[]
-
-      if (existingItemIndex >= 0) {
-        // Update existing item quantity
-        updatedItems = state.items.map((item, index) => {
-          if (index === existingItemIndex) {
-            const newQuantity = item.quantity + quantity
-            const newTotalPrice = calculateItemTotalPrice(menuItem.price, newQuantity, modifiers, menuItem)
-            return { ...item, quantity: newQuantity, totalPrice: newTotalPrice }
-          }
-          return item
-        })
-      } else {
-        // Add new item
-        const newItem: CartItem = {
-          id: Date.now().toString(),
-          menuItemId: menuItem.id,
-          title: menuItem.title,
-          price: menuItem.price,
-          quantity,
-          image: menuItem.image,
-          type: menuItem.type,
-          modifiers,
-          specialInstructions,
-          totalPrice,
-        }
-
-        updatedItems = [...state.items, newItem]
-      }
-
-      // Recalculate totals
-      const { subtotal, tax, total } = recalculateCartTotals(updatedItems, state.discount)
-
-      return {
-        ...state,
-        items: updatedItems,
-        subtotal,
-        tax,
-        total,
-      }
-    }
-
-    case "REMOVE_ITEM": {
-      const updatedItems = state.items.filter((item) => item.id !== action.payload)
-      const { subtotal, tax, total } = recalculateCartTotals(updatedItems, state.discount)
-
-      return {
-        ...state,
-        items: updatedItems,
-        subtotal,
-        tax,
-        total,
-      }
-    }
-
-    case "UPDATE_QUANTITY": {
-      const { id, quantity } = action.payload
-
-      if (quantity <= 0) {
-        // If quantity is 0 or negative, remove the item
-        return cartReducer(state, { type: "REMOVE_ITEM", payload: id })
-      }
-
-      const updatedItems = state.items.map((item) => {
-        if (item.id === id) {
-          // Recalculate total price based on new quantity
-          const totalPrice = item.price * quantity + (item.totalPrice / item.quantity - item.price) * quantity
-
-          return { ...item, quantity, totalPrice }
-        }
-        return item
-      })
-
-      const { subtotal, tax, total } = recalculateCartTotals(updatedItems, state.discount)
-
-      return {
-        ...state,
-        items: updatedItems,
-        subtotal,
-        tax,
-        total,
-      }
-    }
-
-    case "CLEAR_CART":
-      return {
-        ...initialState,
-        tableId: state.tableId,
-        customerName: state.customerName,
-        diningMode: state.diningMode,
-      }
-
-    case "SET_TABLE":
-      return {
-        ...state,
-        tableId: action.payload.tableId,
-        customerName: action.payload.customerName || state.customerName,
-      }
-
-    case "SET_DINING_MODE":
-      return {
-        ...state,
-        diningMode: action.payload,
-      }
-
-    case "APPLY_DISCOUNT": {
-      const { amount, code } = action.payload
-      const total = state.subtotal + state.tax - amount
-
-      return {
-        ...state,
-        discount: amount,
-        discountCode: code,
-        total,
-      }
-    }
-
-    case "REMOVE_DISCOUNT": {
-      const total = state.subtotal + state.tax
-
-      return {
-        ...state,
-        discount: 0,
-        discountCode: undefined,
-        total,
-      }
-    }
-
-    case "UPDATE_ITEM_MODIFIERS": {
-      const { id, modifiers } = action.payload
-
-      const updatedItems = state.items.map((item) => {
-        if (item.id === id) {
-          // In a real app, you'd probably need to fetch the menu item from MenuContext.
-          // Price recalculation needs the full menu item, which we don't have here yet.
-          // This is a simplified calculation; a real implementation should pass the full
-          // menu item or resolve it through a context.
-          const totalPrice = item.totalPrice // This would need proper recalculation
-
-          return { ...item, modifiers, totalPrice }
-        }
-        return item
-      })
-
-      const { subtotal, tax, total } = recalculateCartTotals(updatedItems, state.discount)
-
-      return {
-        ...state,
-        items: updatedItems,
-        subtotal,
-        tax,
-        total,
-      }
-    }
-
-    case "UPDATE_SPECIAL_INSTRUCTIONS": {
-      const { id, instructions } = action.payload
-
-      const updatedItems = state.items.map((item) => {
-        if (item.id === id) {
-          return { ...item, specialInstructions: instructions }
-        }
-        return item
-      })
-
-      return {
-        ...state,
-        items: updatedItems,
-      }
-    }
-
-    default:
-      return state
-  }
-}
-
-// Create context
-interface CartContextType {
-  state: CartState
-  addItem: (
-    menuItem: MenuItem,
-    quantity: number,
-    modifiers: CartModifierSelection[],
-    specialInstructions?: string,
-  ) => void
-  removeItem: (id: string) => void
-  updateQuantity: (id: string, quantity: number) => void
-  clearCart: () => void
-  setTable: (tableId: string, customerName?: string) => void
-  setDiningMode: (mode: DiningMode) => void
-  applyDiscount: (amount: number, code?: string) => void
-  removeDiscount: () => void
-  updateItemModifiers: (id: string, modifiers: CartModifierSelection[]) => void
-  updateSpecialInstructions: (id: string, instructions: string) => void
-}
-
-const CartContext = createContext<CartContextType | undefined>(undefined)
-
-// Provider component
-export const CartProvider = ({ children }: { children: ReactNode }) => {
-  const [state, dispatch] = useReducer(cartReducer, initialState)
-
-  // Load from localStorage on initial render
+  // Load from localStorage on mount (for offline-first draft orders)
   useEffect(() => {
-    const loadCartState = () => {
+    const loadCartState = async () => {
       try {
         const storedCart = localStorage.getItem("posCart")
-
         if (storedCart) {
           const cartData = JSON.parse(storedCart)
-          // We need to manually dispatch each action to properly calculate totals
-
-          // First set the table and dining mode
-          if (cartData.tableId) {
-            dispatch({ 
-              type: 'SET_TABLE', 
-              payload: { 
-                tableId: cartData.tableId,
-    customerName: cartData.customerName
-  }
-});
-          }
-
-          if (cartData.diningMode) {
-            dispatch({
-              type: "SET_DINING_MODE",
-              payload: cartData.diningMode,
+          if (cartData.items?.length > 0) {
+            setState({
+              items: cartData.items,
+              tableId: cartData.tableId,
+              customerName: cartData.customerName,
+              diningMode: cartData.diningMode ?? "Dine in",
+              discount: cartData.discount ?? 0,
+              discountCode: cartData.discountCode,
+              ...recalculateCartTotals(cartData.items, cartData.discount ?? 0),
             })
-          }
-
-          // Then add each item
-          if (cartData.items && Array.isArray(cartData.items)) {
-            cartData.items.forEach((item: CartItem) => {
-              // We need to reconstruct the menu item from the cart item
-              // In a real app, you'd probably fetch this from the MenuContext
-              const menuItem: MenuItem = {
-                id: item.menuItemId,
-                title: item.title,
-                description: "",
-                price: item.price,
-                image: item.image || "",
-                category: "all", // Default category
-                type: item.type,
-                available: true,
-              }
-
-              dispatch({
-                type: "ADD_ITEM",
-                payload: {
-                  menuItem,
-                  quantity: item.quantity,
-                  modifiers: item.modifiers || [],
-                  specialInstructions: item.specialInstructions,
-                },
-              })
-            })
-          }
-
-          // Apply discount if any
-          if (cartData.discount && cartData.discount > 0) {
-            dispatch({
-              type: "APPLY_DISCOUNT",
-              payload: {
-                amount: cartData.discount,
-                code: cartData.discountCode,
-              },
-            })
+            if (cartData.draftOrderId) {
+              setDraftOrderId(cartData.draftOrderId)
+            }
           }
         }
       } catch (error) {
-        console.error("Error loading cart state from localStorage", error)
+        console.error("Error loading cart state:", error)
       }
     }
-
     loadCartState()
   }, [])
 
-  // Save to localStorage whenever state changes
+  // Save to localStorage for offline support
   useEffect(() => {
-    localStorage.setItem("posCart", JSON.stringify(state))
-  }, [state])
+    localStorage.setItem("posCart", JSON.stringify({
+      ...state,
+      draftOrderId,
+    }))
+  }, [state, draftOrderId])
 
-  // Actions
-  const addItem = (
+  const ensureDraftOrder = useCallback(async (): Promise<string> => {
+    if (draftOrderId) return draftOrderId
+
+    if (!authState.user) throw new Error("No user logged in")
+    if (isCreating) {
+      // Wait for existing creation
+      for (let i = 0; i < 50; i++) {
+        await new Promise(r => setTimeout(r, 100))
+        if (draftOrderId) return draftOrderId
+      }
+    }
+
+    setIsCreating(true)
+    try {
+      const orderId = newRequestId()
+      const channel = state.diningMode === "Dine in" ? "pos" :
+        state.diningMode === "Take Away" ? "takeaway" : "delivery"
+
+      const result = await run("order.create", {
+        orderId,
+        channel,
+        tableId: state.tableId ?? undefined,
+        serverId: authState.user.id,
+        dinerName: state.customerName ?? undefined,
+      })
+
+      if (!result.success) {
+        throw new Error(result.error?.message ?? "Failed to create draft order")
+      }
+
+      setDraftOrderId(orderId)
+      return orderId
+    } finally {
+      setIsCreating(false)
+    }
+  }, [draftOrderId, authState.user, state.tableId, state.customerName, state.diningMode, isCreating, run])
+
+  const addItem = useCallback(async (
     menuItem: MenuItem,
     quantity: number,
     modifiers: CartModifierSelection[],
     specialInstructions?: string,
   ) => {
-    dispatch({
-      type: "ADD_ITEM",
-      payload: { menuItem, quantity, modifiers, specialInstructions },
+    const orderId = await ensureDraftOrder()
+
+    // Optimistic update
+    const existingIndex = state.items.findIndex(item =>
+      item.menuItemId === menuItem.id &&
+      item.modifiers?.length === modifiers.length &&
+      item.modifiers?.every((m, i) =>
+        m.modifierId === modifiers[i]?.modifierId &&
+        [...m.optionIds].sort().join() === [...(modifiers[i]?.optionIds ?? [])].sort().join()
+      )
+    )
+
+    const newItem: CartItem = {
+      id: existingIndex >= 0 ? state.items[existingIndex].id : newRequestId(),
+      menuItemId: menuItem.id,
+      title: menuItem.title,
+      price: menuItem.price,
+      quantity: existingIndex >= 0 ? state.items[existingIndex].quantity + quantity : quantity,
+      image: menuItem.image,
+      type: menuItem.type,
+      modifiers,
+      specialInstructions,
+      totalPrice: calculateItemTotalPrice(menuItem.price,
+        existingIndex >= 0 ? state.items[existingIndex].quantity + quantity : quantity,
+        modifiers, menuItem),
+    }
+
+    // Optimistic UI update
+    setState(prev => {
+      const items = existingIndex >= 0
+        ? prev.items.map((item, i) => i === existingIndex ? newItem : item)
+        : [...prev.items, newItem]
+      return { ...prev, items, ...recalculateCartTotals(items, prev.discount) }
     })
-  }
 
-  const removeItem = (id: string) => {
-    dispatch({ type: "REMOVE_ITEM", payload: id })
-  }
+     // Send to kernel (queued if offline)
+    try {
+      const result = await run("order.addLine", {
+        orderId,
+        menuItemId: menuItem.id,
+        name: menuItem.title,
+        unitPrice: menuItem.price,
+        quantity,
+        modifiers: modifiers.map(m => ({ name: m.modifierId, price: 0 })),
+        course: 1,
+      })
 
-  const updateQuantity = (id: string, quantity: number) => {
-    dispatch({ type: "UPDATE_QUANTITY", payload: { id, quantity } })
-  }
+      if (!result.success) {
+        reject("Could not add item", result.error);
+        throw new Error(result.error?.message ?? "Failed to add item")
+      }
+    } catch (error) {
+      // Rollback on failure. A queued (offline) command returns success
+      // without throwing, so it never reaches here — but guard defensively
+      // in case the result shape changes.
+      const isQueued =
+        error &&
+        typeof error === "object" &&
+        "success" in error &&
+        (error as { success: boolean }).success === true &&
+        "queued" in error
+      if (!isQueued) {
+        setState(prev => {
+          const items = existingIndex >= 0
+            ? prev.items.map((item, i) => i === existingIndex ? prev.items[existingIndex] : item)
+            : prev.items.slice(0, -1)
+          return { ...prev, items, ...recalculateCartTotals(items, prev.discount) }
+        })
+        if (error instanceof Error && error.message !== "Failed to add item") reject("Could not add item", { message: error.message });
+      }
+      throw error
+    }
+  }, [state.items, state.tableId, state.customerName, state.diningMode, authState.user, run, ensureDraftOrder, notify])
 
-  const clearCart = () => {
-    dispatch({ type: "CLEAR_CART" })
-  }
+  const removeItem = useCallback(async (id: string) => {
+    if (!draftOrderId) return
 
-  const setTable = (tableId: string, customerName?: string) => {
-    dispatch({ type: "SET_TABLE", payload: { tableId, customerName } })
-  }
+    const item = state.items.find(i => i.id === id)
+    if (!item) return
 
-  const setDiningMode = (mode: DiningMode) => {
-    dispatch({ type: "SET_DINING_MODE", payload: mode })
-  }
-
-  const applyDiscount = (amount: number, code?: string) => {
-    dispatch({ type: "APPLY_DISCOUNT", payload: { amount, code } })
-  }
-
-  const removeDiscount = () => {
-    dispatch({ type: "REMOVE_DISCOUNT" })
-  }
-
-  const updateItemModifiers = (id: string, modifiers: CartModifierSelection[]) => {
-    dispatch({ type: "UPDATE_ITEM_MODIFIERS", payload: { id, modifiers } })
-  }
-
-  const updateSpecialInstructions = (id: string, instructions: string) => {
-    dispatch({
-      type: "UPDATE_SPECIAL_INSTRUCTIONS",
-      payload: { id, instructions },
+    // Optimistic update
+    const previousItems = state.items
+    setState(prev => {
+      const items = prev.items.filter(i => i.id !== id)
+      return { ...prev, items, ...recalculateCartTotals(items, prev.discount) }
     })
-  }
+
+    try {
+      const result = await run("order.voidLine", {
+        orderId: draftOrderId,
+        lineId: id,
+        reason: "removed from cart",
+      })
+
+      if (!result.success && result.error?.code !== "AGGREGATE_NOT_FOUND" && result.error?.code !== "FORBIDDEN") {
+        reject("Could not remove item", result.error);
+        throw new Error(result.error?.message ?? "Failed to remove item")
+      }
+      if (!result.success && result.error?.code === "FORBIDDEN") {
+        reject("Could not remove item", result.error);
+      }
+    } catch (error) {
+      // Rollback
+      setState(prev => ({ ...prev, items: previousItems, ...recalculateCartTotals(previousItems, prev.discount) }))
+      if (error instanceof Error && error.message !== "Failed to remove item") reject("Could not remove item", { message: error.message });
+      throw error
+    }
+  }, [draftOrderId, state.items, run, notify])
+
+  const updateQuantity = useCallback(async (id: string, quantity: number) => {
+    if (!draftOrderId || quantity <= 0) {
+      if (quantity <= 0) await removeItem(id)
+      return
+    }
+
+    const item = state.items.find(i => i.id === id)
+    if (!item) return
+
+    const previousItems = state.items
+    setState(prev => {
+      const items = prev.items.map(i =>
+        i.id === id ? { ...i, quantity, totalPrice: i.price * quantity + (i.totalPrice / i.quantity - i.price) * quantity } : i
+      )
+      return { ...prev, items, ...recalculateCartTotals(items, prev.discount) }
+    })
+
+    // For kernel, we need to void and re-add (no direct update command)
+    try {
+      await run("order.voidLine", { orderId: draftOrderId, lineId: id, reason: "quantity changed" })
+      await run("order.addLine", {
+        orderId: draftOrderId,
+        menuItemId: item.menuItemId,
+        name: item.title,
+        unitPrice: item.price,
+        quantity,
+        modifiers: item.modifiers?.map(m => ({ name: m.modifierId, price: 0 })) ?? [],
+        course: 1,
+      })
+    } catch (error) {
+      setState(prev => ({ ...prev, items: previousItems, ...recalculateCartTotals(previousItems, prev.discount) }))
+      reject("Could not update quantity", { message: error instanceof Error ? error.message : undefined });
+      throw error
+    }
+  }, [draftOrderId, state.items, run, removeItem, notify, attention])
+
+  const clearCart = useCallback(async () => {
+    if (draftOrderId) {
+      try {
+        await run("order.void", { orderId: draftOrderId, reason: "cart cleared" })
+      } catch {
+        // Ignore errors on void
+      }
+    }
+    setState({
+      items: [],
+      tableId: state.tableId,
+      customerName: state.customerName,
+      diningMode: state.diningMode,
+      subtotal: 0,
+      total: 0,
+      discount: 0,
+    })
+    setDraftOrderId(null)
+  }, [draftOrderId, state.tableId, state.customerName, state.diningMode, run])
+
+  const setTable = useCallback(async (tableId: string, customerName?: string) => {
+    setState(prev => ({ ...prev, tableId, customerName: customerName ?? prev.customerName }))
+    if (draftOrderId) {
+      try {
+        await run("order.setTable", { orderId: draftOrderId, tableId })
+      } catch {
+        // Ignore - will be synced on submit
+      }
+    }
+  }, [draftOrderId, run])
+
+  const setDiningMode = useCallback(async (mode: DiningMode) => {
+    setState(prev => ({ ...prev, diningMode: mode }))
+    if (draftOrderId) {
+      // No direct kernel command for channel change - will be reflected on submit
+    }
+  }, [draftOrderId])
+
+  const applyDiscount = useCallback(async (amount: number, code?: string) => {
+    if (!draftOrderId) {
+      setState(prev => {
+        const total = prev.subtotal - amount
+        return { ...prev, discount: amount, discountCode: code, total }
+      })
+      return
+    }
+
+    const previousDiscount = state.discount
+    setState(prev => {
+      const total = prev.subtotal - amount
+      return { ...prev, discount: amount, discountCode: code, total }
+    })
+
+    try {
+      const result = await run("order.applyDiscount", {
+        orderId: draftOrderId,
+        kind: "amount",
+        value: amount,
+        label: code,
+      })
+      if (!result.success && result.error?.code !== "AGGREGATE_NOT_FOUND" && result.error?.code !== "FORBIDDEN") {
+        reject("Could not apply discount", result.error);
+        throw new Error(result.error?.message ?? "Failed to apply discount")
+      }
+      if (!result.success) reject("Could not apply discount", result.error);
+    } catch (error) {
+      setState(prev => {
+        const total = prev.subtotal - previousDiscount
+        return { ...prev, discount: previousDiscount, discountCode: undefined, total }
+      })
+      if (error instanceof Error && error.message !== "Failed to apply discount") reject("Could not apply discount", { message: error.message });
+      throw error
+    }
+  }, [draftOrderId, state.discount, run, notify, attention])
+
+  const removeDiscount = useCallback(async () => {
+    if (!draftOrderId) {
+      setState(prev => {
+        const total = prev.subtotal
+        return { ...prev, discount: 0, discountCode: undefined, total }
+      })
+      return
+    }
+
+    const previousDiscount = state.discount
+    setState(prev => {
+      const total = prev.subtotal
+      return { ...prev, discount: 0, discountCode: undefined, total }
+    })
+
+    // No direct remove discount command - apply 0 amount
+    try {
+      await run("order.applyDiscount", { orderId: draftOrderId, kind: "amount", value: 0 })
+    } catch (error) {
+      setState(prev => {
+        const total = prev.subtotal - previousDiscount
+        return { ...prev, discount: previousDiscount, total }
+      })
+      reject("Could not remove discount", { message: error instanceof Error ? error.message : undefined });
+      throw error
+    }
+  }, [draftOrderId, state.discount, run, notify, attention])
+
+  const updateItemModifiers = useCallback(async (id: string, modifiers: CartModifierSelection[]) => {
+    // Similar to updateQuantity - void and re-add
+    const item = state.items.find(i => i.id === id)
+    if (!item || !draftOrderId) return
+
+    const previousItems = state.items
+    setState(prev => {
+      const items = prev.items.map(i =>
+        i.id === id ? { ...i, modifiers } : i
+      )
+      return { ...prev, items }
+    })
+
+    try {
+      await run("order.voidLine", { orderId: draftOrderId, lineId: id, reason: "modifiers changed" })
+      await run("order.addLine", {
+        orderId: draftOrderId,
+        menuItemId: item.menuItemId,
+        name: item.title,
+        unitPrice: item.price,
+        quantity: item.quantity,
+        modifiers: modifiers.map(m => ({ name: m.modifierId, price: 0 })),
+        course: 1,
+      })
+    } catch (error) {
+      setState(prev => ({ ...prev, items: previousItems }))
+      reject("Could not update modifiers", { message: error instanceof Error ? error.message : undefined });
+      throw error
+    }
+  }, [draftOrderId, state.items, run, notify, attention])
+
+  const updateSpecialInstructions = useCallback(async (id: string, instructions: string) => {
+    setState(prev => ({
+      ...prev,
+      items: prev.items.map(i => i.id === id ? { ...i, specialInstructions: instructions } : i),
+    }))
+    // No kernel command for this - stored locally
+  }, [])
+
+  const submitOrder = useCallback(async (serverId: string): Promise<string> => {
+    if (!draftOrderId || state.items.length === 0) {
+      throw new Error("No items in cart")
+    }
+
+    // Server-authoritative tax: stamp the venue rate onto the order event log
+    // before firing, so the receipt total cannot drift from venue config.
+    try {
+      // Tax rate is stored on the venue aggregate; applyTax command reads it
+      const taxRes = await run("order.applyTax", { orderId: draftOrderId })
+      if (!taxRes.success && taxRes.error?.code !== "FORBIDDEN") {
+        reject("Could not apply tax", taxRes.error)
+      }
+      const res = await run("order.sendToKitchen", { orderId: draftOrderId })
+      if (!res.success) { reject("Failed to send to kitchen", res.error); throw new Error(res.error?.message ?? "Failed to send to kitchen"); }
+      notify("success", "Order sent to kitchen")
+    } catch (error) {
+      if (error instanceof Error && error.message !== "Failed to send to kitchen") reject("Failed to send to kitchen", { message: error.message });
+      throw error
+    }
+
+    const submittedOrderId = draftOrderId
+    setState(prev => ({ ...prev, items: [], subtotal: 0, total: 0, discount: 0 }))
+    setDraftOrderId(null)
+    return submittedOrderId
+  }, [draftOrderId, state.items.length, run, notify])
+
+  const syncFromStorage = useCallback(async () => {
+    // Trigger re-hydration from localStorage
+    const storedCart = localStorage.getItem("posCart")
+    if (storedCart) {
+      try {
+        const cartData = JSON.parse(storedCart)
+        if (cartData.items?.length > 0) {
+          setState({
+            items: cartData.items,
+            tableId: cartData.tableId,
+            customerName: cartData.customerName,
+            diningMode: cartData.diningMode ?? "Dine in",
+            discount: cartData.discount ?? 0,
+            discountCode: cartData.discountCode,
+            ...recalculateCartTotals(cartData.items, cartData.discount ?? 0),
+          })
+          if (cartData.draftOrderId) {
+            setDraftOrderId(cartData.draftOrderId)
+          }
+        }
+      } catch (error) {
+        console.error("Error syncing cart:", error)
+      }
+    }
+  }, [])
+
+  const contextValue = useMemo<CartContextType>(() => ({
+    state,
+    isCreating,
+    draftOrderId,
+    addItem,
+    removeItem,
+    updateQuantity,
+    clearCart,
+    setTable,
+    setDiningMode,
+    applyDiscount,
+    removeDiscount,
+    updateItemModifiers,
+    updateSpecialInstructions,
+    submitOrder,
+    syncFromStorage,
+  }), [
+    state,
+    isCreating,
+    draftOrderId,
+    addItem,
+    removeItem,
+    updateQuantity,
+    clearCart,
+    setTable,
+    setDiningMode,
+    applyDiscount,
+    removeDiscount,
+    updateItemModifiers,
+    updateSpecialInstructions,
+    submitOrder,
+    syncFromStorage,
+  ])
 
   return (
-    <CartContext.Provider
-      value={{
-        state,
-        addItem,
-        removeItem,
-        updateQuantity,
-        clearCart,
-        setTable,
-        setDiningMode,
-        applyDiscount,
-        removeDiscount,
-        updateItemModifiers,
-        updateSpecialInstructions,
-      }}
-    >
+    <CartContext.Provider value={contextValue}>
       {children}
     </CartContext.Provider>
   )

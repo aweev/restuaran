@@ -68,7 +68,7 @@ export function KitchenStaffAssignment() {
       console.error("Error adding staff assignment:", error)
       toast({
         title: "Error",
-        description: "Failed to add staff assignment",
+        description: error instanceof Error ? error.message : "Failed to add staff assignment",
         variant: "destructive",
       })
     }
@@ -85,7 +85,7 @@ export function KitchenStaffAssignment() {
       console.error("Error removing staff assignment:", error)
       toast({
         title: "Error",
-        description: "Failed to remove staff assignment",
+        description: error instanceof Error ? error.message : "Failed to remove staff assignment",
         variant: "destructive",
       })
     }
@@ -149,15 +149,14 @@ export function KitchenStaffAssignment() {
                   <TableHead>Staff ID</TableHead>
                   <TableHead>Name</TableHead>
                   <TableHead>Station</TableHead>
-                  <TableHead>Assigned Orders</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {state.staffAssignments.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="h-24 text-center">
-                      No staff assignments
+                    <TableCell colSpan={4} className="h-24 text-center">
+                      No staff on stations — assignments sync to every KDS live.
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -166,11 +165,11 @@ export function KitchenStaffAssignment() {
                       <TableCell className="font-mono">{assignment.userId}</TableCell>
                       <TableCell>{assignment.userName}</TableCell>
                       <TableCell>{assignment.station}</TableCell>
-                      <TableCell>{assignment.assignedOrders.length}</TableCell>
                       <TableCell className="text-right">
                         <Button
                           variant="ghost"
                           size="icon"
+                          aria-label={`Remove ${assignment.userName} from ${assignment.station}`}
                           onClick={() => handleRemoveAssignment(assignment.userId, assignment.userName)}
                         >
                           <Trash2 className="h-4 w-4" />

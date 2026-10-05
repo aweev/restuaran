@@ -141,12 +141,23 @@ export default function OrderTrackingPage() {
     return (
       <div className="flex flex-col min-h-screen">
         <CustomerHeader tableNumber={tableNumber} showBackButton title="Order Tracking" />
-        
+
         <main className="flex-1 container max-w-lg mx-auto px-4 py-6">
           <Card>
             <CardContent className="flex flex-col items-center justify-center py-8">
               <p className="text-center text-muted-foreground mb-4">{error || "Order not found"}</p>
-              <Button asChild>
+              <form
+                className="flex w-full gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  const id = (new FormData(e.currentTarget).get("orderId") as string)?.trim()
+                  if (id) window.location.href = `/customer/order-tracking?orderId=${encodeURIComponent(id)}${tableNumber ? `&table=${tableNumber}` : ""}`
+                }}
+              >
+                <input name="orderId" placeholder="Enter order code" aria-label="Order code" className="h-11 flex-1 rounded-md border px-3" />
+                <Button type="submit">Track</Button>
+              </form>
+              <Button asChild variant="outline" className="mt-4">
                 <Link href={`/customer/menu${tableNumber ? `?table=${tableNumber}` : ""}`}>
                   Return to Menu
                 </Link>
@@ -154,7 +165,7 @@ export default function OrderTrackingPage() {
             </CardContent>
           </Card>
         </main>
-        
+
         <CustomerFooter />
       </div>
     )

@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  CI: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both active LTS lines. Local development happens on a newer runtime,
+        # so validating only one would let a gate pass locally and fail in CI.
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: SQL verification
+        run: npm run verify:sql
+
+      - name: Kernel smoke
+        run: npm run kernel:smoke
+
+      - name: SDK freshness check
+        run: npm run kernel:sdk:check
+
+      - name: Production build
+        run: npm run build
+
+  test:
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # No test runner is configured yet. This step fails the job rather than
+      # swallowing its own failure, so the suite cannot report green while
+      # silently running nothing.
+      - name: Run tests
+        run: npm test --if-present

@@ -2,7 +2,7 @@
 
 import type { Reservation } from "@/types/reservation"
 import type { Table } from "@/types"
-import { format } from "date-fns"
+import { reservationSlotToDate, formatReservationTime } from "@/lib/kernel-mappers"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
@@ -58,7 +58,10 @@ export function ReservationList({ reservations, tables }: ReservationListProps) 
   return (
     <div className="space-y-4">
       {reservations
-        .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())
+        .sort(
+          (a, b) =>
+            reservationSlotToDate(a.date, a.time).getTime() - reservationSlotToDate(b.date, b.time).getTime(),
+        )
         .map((reservation) => {
           const table = getTableById(reservation.tableId)
 
@@ -77,7 +80,7 @@ export function ReservationList({ reservations, tables }: ReservationListProps) 
                 <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm text-muted-foreground">
                   <div className="flex items-center gap-1">
                     <Clock className="h-4 w-4" />
-                    <span>{format(new Date(reservation.time), "h:mm a")}</span>
+                    <span>{formatReservationTime(reservation.date, reservation.time)}</span>
                   </div>
                   <div className="flex items-center gap-1">
                     <Users className="h-4 w-4" />

@@ -1,72 +1,73 @@
 import { NextResponse } from "next/server"
-import prisma from "@/lib/prisma"
-import { withAuth, type AuthenticatedRequest } from "@/middleware/auth-middleware"
+import { withAuth, type AuthenticatedRequest, type RouteContext } from "@/middleware/auth-middleware"
+import { one, sqlWrite, audit } from "@/lib/db-helpers"
 import twilio from "twilio"
 
-// Initialize Twilio client
-const twilioClient =
-  process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN
-    ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
-    : null
+/**
+ * Initialised lazily so importing this route never throws at build time when
+ * Twilio is unconfigured. The previous module-level `twilio(...)` call ran on
+ * import, which would have crashed page-data collection in every environment
+ * missing credentials.
+ */
+let client: ReturnType<typeof twilio> | null | undefined
+function getTwilio(): ReturnType<typeof twilio> | null {
+  if (client !== undefined) return client
+  const sid = process.env.TWILIO_ACCOUNT_SID
+  const token = process.env.TWILIO_AUTH_TOKEN
+  client = sid && token ? twilio(sid, token) : null
+  return client
+}
 
-// POST - Notify a customer that their table is ready
-export const POST = withAuth(async (req: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) => {
+type Ctx = RouteContext<{ id: string }>
+
+export const POST = withAuth(async (req: AuthenticatedRequest, { params }: Ctx) => {
   try {
     const { id } = await params
 
-    // Check if wait list entry exists
-    const waitListEntry = await prisma.waitList.findUnique({
-      where: { id },
-    })
+    const entry = await one<{ id: string; customerName: string; phoneNumber: string | null }>(
+      `SELECT id, "customerName", "phoneNumber" FROM "WaitlistEntry" WHERE id = $1`,
+      [id],
+    )
+    if (!entry) return NextResponse.json({ error: "Wait list entry not found" }, { status: 404 })
 
-    if (!waitListEntry) {
-      return NextResponse.json({ error: "Wait list entry not found" }, { status: 404 })
+    let sms: "sent" | "skipped" | "failed" = "skipped"
+
+    if (entry.phoneNumber) {
+      const twilioClient = getTwilio()
+      const from = process.env.TWILIO_PHONE_NUMBER
+      if (twilioClient && from) {
+        try {
+          await twilioClient.messages.create({
+            body: `Hi ${entry.customerName} — your table at Maison Chili is ready. Please check in with the host.`,
+            from,
+            to: entry.phoneNumber,
+          })
+          sms = "sent"
+        } catch (err) {
+          // A failed SMS must not block the host from marking the guest notified.
+          console.error("[waitlist] SMS failed:", err)
+          sms = "failed"
+        }
+      }
     }
 
-    // If no phone number, just mark as notified
-    if (!waitListEntry.phoneNumber) {
-      const updatedEntry = await prisma.waitList.update({
-        where: { id },
-        data: { notified: true },
-      })
+    const rows = await sqlWrite(
+      `UPDATE "WaitlistEntry" SET notified = TRUE WHERE id = $1 RETURNING *`,
+      [id],
+    )
 
-      return NextResponse.json(updatedEntry)
-    }
-
-    // Send SMS notification if Twilio is configured
-    if (twilioClient && process.env.TWILIO_PHONE_NUMBER) {
-      await twilioClient.messages.create({
-        body: `Hello ${waitListEntry.customerName}, your table at our restaurant is now ready! Please check in with the host.`,
-        from: process.env.TWILIO_PHONE_NUMBER,
-        to: waitListEntry.phoneNumber,
-      })
-    } else {
-      console.warn("Twilio not configured, skipping SMS notification")
-    }
-
-    // Update wait list entry to mark as notified
-    const updatedEntry = await prisma.waitList.update({
-      where: { id },
-      data: { notified: true },
+    await audit({
+      userId: req.user.sub,
+      action: "NOTIFY",
+      entity: "WAITLIST",
+      entityId: id,
+      details: { customerName: entry.customerName, phoneNumber: entry.phoneNumber, sms },
     })
 
-    // Log the action
-    await prisma.auditLog.create({
-      data: {
-        userId: req.user.sub,
-        action: "NOTIFY",
-        entity: "WAITLIST",
-        entityId: id,
-        details: {
-          customerName: waitListEntry.customerName,
-          phoneNumber: waitListEntry.phoneNumber,
-        },
-      },
-    })
-
-    return NextResponse.json(updatedEntry)
+    return NextResponse.json({ ...(rows[0] ?? {}), sms })
   } catch (error) {
-    console.error("Error notifying customer:", error)
+    console.error("[waitlist] notify failed:", error)
     return NextResponse.json({ error: "Failed to notify customer" }, { status: 500 })
   }
 })
+

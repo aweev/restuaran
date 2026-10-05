@@ -6,14 +6,9 @@ import {
   StoredEvent,
   TenantContext,
 } from "@/kernel/types"
-import { AppendOptions, EventQuery, EventStore } from "./event-store"
+import { AppendOptions, EventQuery, EventStore, versionConflictError } from "./event-store"
 
-class ConflictError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = "ConflictError"
-  }
-}
+export { versionConflictError }
 
 function sameTenant(a: TenantContext, b: TenantContext): boolean {
   return a.orgId === b.orgId && a.venueId === b.venueId
@@ -62,9 +57,8 @@ export class InMemoryEventStore implements EventStore {
     const currentVersion = existing.reduce((max, e) => Math.max(max, e.aggregateVersion), 0)
 
     if (options?.expectedVersion !== undefined && options.expectedVersion !== currentVersion) {
-      throw new ConflictError(
-        `Optimistic concurrency conflict: expected v${options.expectedVersion}, current v${currentVersion}`
-      )
+      const v = versionConflictError(options.expectedVersion, currentVersion, `${first.aggregateType}/${first.aggregateId}`)
+      throw kernelError(v.code, v.message, v.details)
     }
 
     const stored: StoredEvent[] = events.map((e, i) => {

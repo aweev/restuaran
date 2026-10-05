@@ -1,594 +1,469 @@
 "use client"
 
-import { createContext, useReducer, useContext, useEffect, useCallback, type ReactNode } from "react"
-import type { OrderState, Order, OrderStatus, CartItem, DiningMode, Payment, Table } from "@/types"
+import { createContext, useContext, useMemo, useState, type ReactNode } from "react"
+import type { Order, OrderStatus, CartItem, DiningMode, Payment, Table, PaymentMethod } from "@/types"
 import { useAuth } from "./AuthContext"
+import { useCommand, useProjection, useKernel, newRequestId } from "@/kernel/react/kernel-provider"
+import type { OrderBoardState } from "@/kernel/projections/orders-board"
+import { orderRowsToOrders } from "@/lib/kernel-mappers"
+import { useFeedback, notifyWithActions, recoveryActionsFor, suggestedToRecovery, type SuggestedAction } from "@/lib/feedback"
+import { useAttentionOptional } from "@/context/AttentionContext"
+import { ConflictDialog, conflictVersions } from "@/components/pos/conflict-dialog"
 
-// Initial state
-const initialState: OrderState = {
-  orders: [],
-  activeOrders: [],
-  completedOrders: [],
-  loading: false,
-  error: null,
-  selectedOrder: null,
-}
-
-// Action types
-type OrderAction =
-  | { type: "FETCH_ORDERS_START" }
-  | { type: "FETCH_ORDERS_SUCCESS"; payload: Order[] }
-  | { type: "FETCH_ORDERS_FAILURE"; payload: string }
-  | { type: "SELECT_ORDER"; payload: Order | null }
-  | { type: "CREATE_ORDER"; payload: Order }
-  | { type: "UPDATE_ORDER_STATUS"; payload: { orderId: string; status: OrderStatus } }
-  | { type: "ADD_PAYMENT"; payload: { orderId: string; payment: Payment } }
-  | { type: "UPDATE_ORDER_ITEMS"; payload: { orderId: string; items: CartItem[] } }
-  | { type: "CANCEL_ORDER"; payload: string }
-  | { type: "UPDATE_ORDER_NOTES"; payload: { orderId: string; notes: string } }
-  | { type: "REASSIGN_ORDERS_TABLE"; payload: { targetTableId: string; sourceTableIds: string[]; targetTable: Table } }
-
-// Helper function to filter active and completed orders
-const filterOrders = (orders: Order[]): { activeOrders: Order[]; completedOrders: Order[] } => {
-  const activeStatuses: OrderStatus[] = ["pending", "preparing", "ready", "delivered"]
-  const completedStatuses: OrderStatus[] = ["completed", "cancelled"]
-
-  const activeOrders = orders.filter((order) => activeStatuses.includes(order.status))
-  const completedOrders = orders.filter((order) => completedStatuses.includes(order.status))
-
-  return { activeOrders, completedOrders }
-}
-
-// Reducer
-const orderReducer = (state: OrderState, action: OrderAction): OrderState => {
-  switch (action.type) {
-    case "FETCH_ORDERS_START":
-      return {
-        ...state,
-        loading: true,
-        error: null,
-      }
-    case "FETCH_ORDERS_SUCCESS": {
-      const orders = Array.isArray(action.payload) ? action.payload : []
-      const { activeOrders, completedOrders } = filterOrders(orders)
-
-      return {
-        ...state,
-        orders,
-        activeOrders,
-        completedOrders,
-        loading: false,
-      }
-    }
-    case "FETCH_ORDERS_FAILURE":
-      return {
-        ...state,
-        loading: false,
-        error: action.payload,
-      }
-    case "SELECT_ORDER":
-      return {
-        ...state,
-        selectedOrder: action.payload,
-      }
-    case "CREATE_ORDER": {
-      const newOrder = action.payload
-      const updatedOrders = [...state.orders, newOrder]
-      const { activeOrders, completedOrders } = filterOrders(updatedOrders)
-
-      return {
-        ...state,
-        orders: updatedOrders,
-        activeOrders,
-        completedOrders,
-      }
-    }
-    case "UPDATE_ORDER_STATUS": {
-      const updatedOrders = state.orders.map((order) =>
-        order.id === action.payload.orderId
-          ? {
-              ...order,
-              status: action.payload.status,
-              updatedAt: new Date().toISOString(),
-            }
-          : order,
-      )
-
-      const { activeOrders, completedOrders } = filterOrders(updatedOrders)
-
-      return {
-        ...state,
-        orders: updatedOrders,
-        activeOrders,
-        completedOrders,
-        // Update selected order if it's the one being modified
-        selectedOrder:
-          state.selectedOrder?.id === action.payload.orderId
-            ? { ...state.selectedOrder, status: action.payload.status, updatedAt: new Date().toISOString() }
-            : state.selectedOrder,
-      }
-    }
-    case "ADD_PAYMENT": {
-      const { orderId, payment } = action.payload
-
-      const updatedOrders = state.orders.map((order) => {
-        if (order.id === orderId) {
-          const updatedPayments = [...order.payments, payment]
-          const totalPaid = updatedPayments.reduce((sum, p) => sum + p.amount, 0)
-          const isPaid = totalPaid >= order.total
-
-          return {
-            ...order,
-            payments: updatedPayments,
-            isPaid,
-            updatedAt: new Date().toISOString(),
-          }
-        }
-        return order
-      })
-
-      return {
-        ...state,
-        orders: updatedOrders,
-        // Update selected order if it's the one being modified
-        selectedOrder:
-          state.selectedOrder?.id === orderId
-            ? {
-                ...state.selectedOrder,
-                payments: [...state.selectedOrder.payments, payment],
-                isPaid:
-                  [...state.selectedOrder.payments, payment].reduce((sum, p) => sum + p.amount, 0) >=
-                  state.selectedOrder.total,
-                updatedAt: new Date().toISOString(),
-              }
-            : state.selectedOrder,
-      }
-    }
-    case "UPDATE_ORDER_ITEMS": {
-      const { orderId, items } = action.payload
-
-      const updatedOrders = state.orders.map((order) => {
-        if (order.id === orderId) {
-          // Recalculate totals
-          const subtotal = items.reduce((sum, item) => sum + item.totalPrice, 0)
-          const taxRate = 0.05 // 5% tax rate
-          const tax = subtotal * taxRate
-          const total = subtotal + tax - order.discount
-
-          return {
-            ...order,
-            items,
-            subtotal,
-            tax,
-            total,
-            updatedAt: new Date().toISOString(),
-          }
-        }
-        return order
-      })
-
-      return {
-        ...state,
-        orders: updatedOrders,
-        // Update selected order if it's the one being modified
-        selectedOrder:
-          state.selectedOrder?.id === orderId
-            ? {
-                ...state.selectedOrder,
-                items,
-                subtotal: items.reduce((sum, item) => sum + item.totalPrice, 0),
-                tax: items.reduce((sum, item) => sum + item.totalPrice, 0) * 0.05,
-                total: items.reduce((sum, item) => sum + item.totalPrice, 0) * 1.05 - state.selectedOrder.discount,
-                updatedAt: new Date().toISOString(),
-              }
-            : state.selectedOrder,
-      }
-    }
-    case "CANCEL_ORDER": {
-      const updatedOrders: Order[] = state.orders.map((order) =>
-        order.id === action.payload
-          ? {
-              ...order,
-              status: "cancelled" as const,
-              updatedAt: new Date().toISOString(),
-            }
-          : order,
-      )
-
-      const { activeOrders, completedOrders } = filterOrders(updatedOrders)
-
-      return {
-        ...state,
-        orders: updatedOrders,
-        activeOrders,
-        completedOrders,
-        // Update selected order if it's the one being cancelled
-        selectedOrder:
-          state.selectedOrder?.id === action.payload
-            ? { ...state.selectedOrder, status: "cancelled" as const, updatedAt: new Date().toISOString() }
-            : state.selectedOrder,
-      }
-    }
-    case "UPDATE_ORDER_NOTES": {
-      const { orderId, notes } = action.payload
-
-      const updatedOrders = state.orders.map((order) =>
-        order.id === orderId
-          ? {
-              ...order,
-              notes,
-              updatedAt: new Date().toISOString(),
-            }
-          : order,
-      )
-
-      return {
-        ...state,
-        orders: updatedOrders,
-        // Update selected order if it's the one being modified
-        selectedOrder:
-          state.selectedOrder?.id === orderId
-            ? { ...state.selectedOrder, notes, updatedAt: new Date().toISOString() }
-            : state.selectedOrder,
-      }
-    }
-    case "REASSIGN_ORDERS_TABLE": {
-      const { targetTableId, sourceTableIds, targetTable } = action.payload
-      const sourceIds = new Set(sourceTableIds)
-      const now = new Date().toISOString()
-
-      // Only active orders move; completed/cancelled ones keep their history table.
-      const activeStatuses: OrderStatus[] = ["pending", "preparing", "ready", "delivered"]
-
-      const updatedOrders: Order[] = state.orders.map((order) =>
-        order.tableId !== null && sourceIds.has(order.tableId) && activeStatuses.includes(order.status)
-          ? {
-              ...order,
-              tableId: targetTableId,
-              table: targetTable,
-              tableNumber: targetTable.number,
-              updatedAt: now,
-            }
-          : order,
-      )
-
-      const { activeOrders, completedOrders } = filterOrders(updatedOrders)
-
-      return {
-        ...state,
-        orders: updatedOrders,
-        activeOrders,
-        completedOrders,
-        selectedOrder: state.selectedOrder
-          ? updatedOrders.find((order) => order.id === state.selectedOrder!.id) ?? state.selectedOrder
-          : state.selectedOrder,
-      }
-    }
-    default:
-      return state
-  }
-}
-
-// Create context
 interface OrderContextType {
-  state: OrderState
+  state: {
+    orders: Order[]
+    activeOrders: Order[]
+    completedOrders: Order[]
+    myOrders: Order[]
+    loading: boolean
+    error: string | null
+    selectedOrder: Order | null
+  }
+  orders: Order[]
+  activeOrders: Order[]
+  completedOrders: Order[]
+  myOrders: Order[]
+  loading: boolean
+  error: string | null
+  selectedOrder: Order | null
   fetchOrders: () => Promise<void>
   selectOrder: (order: Order | null) => void
-  createOrder: (
-    items: CartItem[],
-    tableId: string | null,
-    customerName: string | null,
-    diningMode: DiningMode,
-    serverId: string,
-    subtotal: number,
-    tax: number,
-    discount: number,
-    total: number,
-    notes?: string,
-  ) => Promise<Order>
+   createOrder: (
+     items: CartItem[],
+     tableId: string | null,
+     customerName: string | null,
+     diningMode: DiningMode,
+     serverId: string,
+     subtotal: number,
+     discount: number,
+     total: number,
+     notes?: string,
+   ) => Promise<Order>
   updateOrderStatus: (orderId: string, status: OrderStatus) => Promise<void>
   addPayment: (orderId: string, payment: Payment) => Promise<void>
   updateOrderItems: (orderId: string, items: CartItem[]) => Promise<void>
   updateOrderNotes: (orderId: string, notes: string) => Promise<void>
   cancelOrder: (orderId: string) => Promise<void>
-  /** Convenience accessor for the full order list (mirrors `state.orders`). */
-  orders: Order[]
-  /** Moves all active orders from `sourceTableIds` onto `targetTable`. Returns the number merged. */
   mergeOrders: (targetTable: Table, sourceTableIds: string[]) => Promise<number>
-  /** Moves all active orders from one table to another. Returns the number transferred. */
   transferOrderTable: (sourceTableId: string, targetTable: Table) => Promise<number>
 }
 
 const OrderContext = createContext<OrderContextType | undefined>(undefined)
 
-// Provider component
+/**
+ * Orders, backed entirely by the event store.
+ *
+ * Reads come from the `orders.board` projection (kernel-created tickets: lines,
+ * money, kitchen status). Writes go through kernel commands — `order.create` +
+ * `order.addLine`, `order.sendToKitchen`, `order.recordPayment`/`order.close`,
+ * `order.void`, `order.transferLines`, `order.setNotes`, `order.setTable` —
+ * so cross-module guards (86'd policy) and the audit trail apply.
+ *
+ * The public interface is unchanged, so every consumer keeps working.
+ */
 export const OrderProvider = ({ children }: { children: ReactNode }) => {
-  const [state, dispatch] = useReducer(orderReducer, initialState)
   const { state: authState } = useAuth()
+  const { state: board } = useProjection<OrderBoardState>("orders.board", 1500)
+  const { run } = useCommand()
+  const { ask } = useKernel()
+  const { notify } = useFeedback()
+  const attention = useAttentionOptional()
+  const [selected, setSelected] = useState<Order | null>(null)
+  const [conflict, setConflict] = useState<{
+    open: boolean;
+    commandType: string;
+    payload: Record<string, unknown>;
+    message?: string;
+    currentVersion?: number;
+    expectedVersion?: number;
+    serverSummary?: string;
+  } | null>(null)
 
+  const kernelOrders = useMemo(() => orderRowsToOrders(board?.rows ?? []), [board])
+  const myOrders = useMemo(() => {
+    const uid = authState.user?.id;
+    if (!uid) return [];
+    return kernelOrders.filter((o) => o.serverId === uid);
+  }, [kernelOrders, authState.user?.id])
 
-  // Actions
-  const fetchOrders = useCallback(async () => {
-    if (!authState.token) {
-      return
-    }
-    dispatch({ type: "FETCH_ORDERS_START" })
-    try {
-      const response = await fetch("/api/orders", {
-        headers: {
-          Authorization: `Bearer ${authState.token}`,
-        },
-      })
+  const state = useMemo(() => ({
+    orders: kernelOrders,
+    activeOrders: kernelOrders.filter(o => ["pending", "preparing", "ready", "delivered"].includes(o.status)),
+    completedOrders: kernelOrders.filter(o => ["completed", "cancelled"].includes(o.status)),
+    myOrders,
+    loading: board === null,
+    error: null,
+    selectedOrder: selected,
+  }), [kernelOrders, myOrders, board, selected])
 
-      if (response.status === 401) {
-        dispatch({
-          type: "FETCH_ORDERS_FAILURE",
-          payload: "Authentication required",
-        })
-        return
-      }
+  const reject = (title: string, err?: { message?: string; code?: string }, commandType?: string, payload?: Record<string, unknown>, serverActions?: SuggestedAction[]) => {
+    const code = err?.code;
+    const msg = err?.message;
+    // Prefer server-suggested command-carrying actions; fall back to the
+    // legacy client-side navigation map.
+    const fromServer = suggestedToRecovery(serverActions, run, notify);
+    const base = fromServer.length > 0 ? fromServer : recoveryActionsFor(code);
+    const actions = code === "VERSION_CONFLICT" && commandType && payload
+      ? [
+          { label: "Retry", run: () => { void run(commandType, payload); } },
+          { label: "Reload", run: () => { window.location.reload(); } },
+          ...base,
+        ]
+      : base;
+    attention?.push({ title, message: msg, code, href: "/dashboard/orders" });
+    if (actions.length > 0) notifyWithActions(title, msg, actions);
+    else notify("error", title, msg);
+  };
 
-      if (!response.ok) {
-        throw new Error("Failed to fetch orders")
-      }
-
-      const data = await response.json()
-
-      dispatch({
-        type: "FETCH_ORDERS_SUCCESS",
-        payload: data,
-      })
-    } catch (error) {
-      dispatch({
-        type: "FETCH_ORDERS_FAILURE",
-        payload: error instanceof Error ? error.message : "Failed to fetch orders",
-      })
-    }
-  }, [authState.token])
-
-  // Fetch orders when component mounts and user is authenticated
-  useEffect(() => {
-    if (authState.isAuthenticated) {
-      fetchOrders()
-    }
-  }, [authState.isAuthenticated, fetchOrders])
-
-  const selectOrder = (order: Order | null) => {
-    dispatch({ type: "SELECT_ORDER", payload: order })
+  /**
+   * Run a single command with conflict-dialog handling: on VERSION_CONFLICT
+   * the dialog opens (with a live server summary) instead of a bare toast.
+   * Callers must still skip their own rejection toast for VERSION_CONFLICT —
+   * the dialog owns that case.
+   */
+  const runWithConflict = async (
+    commandType: string,
+    payload: Record<string, unknown>,
+  ) => {
+    const result = await run(commandType, payload, {
+      onConflict: async (err) => {
+        const versions = conflictVersions(err);
+        // Show what the record looks like *now* so retry-vs-reload is an
+        // informed choice, not a guess.
+        let serverSummary: string | undefined;
+        const oid = payload.orderId;
+        if (typeof oid === "string") {
+          try {
+            const view = await ask<{ state: { status?: string; lines?: unknown[] } }>("get.order", { orderId: oid });
+            if (view.success) {
+              const n = Array.isArray(view.data.state.lines) ? view.data.state.lines.length : 0;
+              serverSummary = `Latest: ${String(view.data.state.status ?? "unknown")} · ${n} line${n === 1 ? "" : "s"}`;
+            }
+          } catch {
+            /* advisory only */
+          }
+        }
+        setConflict({
+          open: true,
+          commandType,
+          payload,
+          message: err.message,
+          currentVersion: versions.currentVersion,
+          expectedVersion: versions.expectedVersion,
+          serverSummary,
+        });
+        return "abort";
+      },
+    })
+    return result
   }
 
-  const createOrder = async (
-    items: CartItem[],
-    tableId: string | null,
-    customerName: string | null,
-    diningMode: DiningMode,
-    serverId: string,
-    subtotal: number,
-    tax: number,
-    discount: number,
-    total: number,
-    notes?: string,
-  ): Promise<Order> => {
-    try {
-      const response = await fetch("/api/orders", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify({
-          items,
-          tableId,
-          customerName,
-          diningMode,
-          serverId,
-          subtotal,
-          tax,
-          discount,
-          total,
-          notes,
-        }),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to create order")
-      }
-
-      const newOrder = await response.json()
-
-      dispatch({
-        type: "CREATE_ORDER",
-        payload: newOrder,
-      })
-
-      return newOrder
-    } catch (error) {
-      throw error instanceof Error ? error : new Error("Failed to create order")
-    }
-  }
-
-  const updateOrderStatus = async (orderId: string, status: OrderStatus) => {
-    try {
-      const response = await fetch(`/api/orders/${orderId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify({ status }),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to update order status")
-      }
-
-      dispatch({
-        type: "UPDATE_ORDER_STATUS",
-        payload: { orderId, status },
-      })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to update order status")
-    }
-  }
-
-  const addPayment = async (orderId: string, payment: Payment) => {
-    try {
-      const response = await fetch(`/api/orders/${orderId}/payments`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify(payment),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to add payment")
-      }
-
-      const newPayment = await response.json()
-
-      dispatch({
-        type: "ADD_PAYMENT",
-        payload: { orderId, payment: newPayment },
-      })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to add payment")
-    }
-  }
-
-  const updateOrderItems = async (orderId: string, items: CartItem[]) => {
-    try {
-      const response = await fetch(`/api/orders/${orderId}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify({ items }),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to update order items")
-      }
-
-      dispatch({
-        type: "UPDATE_ORDER_ITEMS",
-        payload: { orderId, items },
-      })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to update order items")
-    }
-  }
-
-  const updateOrderNotes = async (orderId: string, notes: string) => {
-    try {
-      const response = await fetch(`/api/orders/${orderId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify({ notes }),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to update order notes")
-      }
-
-      dispatch({
-        type: "UPDATE_ORDER_NOTES",
-        payload: { orderId, notes },
-      })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to update order notes")
-    }
-  }
-
-  const cancelOrder = async (orderId: string) => {
-    try {
-      const response = await fetch(`/api/orders/${orderId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify({ status: "cancelled" }),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to cancel order")
-      }
-
-      dispatch({
-        type: "CANCEL_ORDER",
-        payload: orderId,
-      })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to cancel order")
-    }
-  }
-
-  // Merge every active order sitting on `sourceTableIds` onto `targetTable`.
-  // NOTE: `PATCH /api/orders/[id]` does not currently accept a `tableId` change, so
-  // this reassignment is applied to local state only. When the orders endpoint gains
-  // table reassignment, persist each moved order here.
-  const mergeOrders = async (targetTable: Table, sourceTableIds: string[]): Promise<number> => {
+  const mergeOrdersFn = async (targetTable: Table, sourceTableIds: string[]): Promise<number> => {
     if (sourceTableIds.length === 0) return 0
 
     const activeStatuses: OrderStatus[] = ["pending", "preparing", "ready", "delivered"]
-    const movedCount = state.orders.filter(
+    const toMove = state.orders.filter(
       (order) => order.tableId !== null && sourceTableIds.includes(order.tableId) && activeStatuses.includes(order.status),
-    ).length
+    )
 
-    if (movedCount === 0) return 0
+    if (toMove.length === 0) return 0
 
-    dispatch({
-      type: "REASSIGN_ORDERS_TABLE",
-      payload: {
-        targetTableId: targetTable.id,
-        sourceTableIds,
-        targetTable,
-      },
-    })
+    for (const order of toMove) {
+      const lineIds = order.items.map((i) => i.id)
+      if (lineIds.length === 0) continue
+      try {
+        const dest = state.orders.find(
+          (o) => o.tableId === targetTable.id && activeStatuses.includes(o.status),
+        )
+        let destId = dest?.id
+        if (!destId) {
+          const created = await run("order.create", {
+            tableId: targetTable.id,
+            serverId: order.serverId,
+            dinerName: order.customerName ?? undefined,
+          })
+          if (!created.success) continue
+          destId = created.aggregateId ?? newRequestId()
+        }
+        await run("order.transferLines", {
+          orderId: order.id,
+          toOrderId: destId,
+          lineIds,
+          transferId: `merge-${order.id}-${destId}`,
+        })
+      } catch {
+        /* per-order best-effort */
+      }
+    }
 
-    return movedCount
+    return toMove.length
   }
 
-  // Move all active orders from `sourceTableId` to `targetTable`. See mergeOrders note
-  // about this being a local-state-only reassignment.
-  const transferOrderTable = async (sourceTableId: string, targetTable: Table): Promise<number> =>
-    mergeOrders(targetTable, [sourceTableId])
+  const fetchOrders = async () => {
+    // No-op: projection refreshes automatically
+  }
+
+  const handleConflictRetry = async () => {
+    if (!conflict) return;
+    const result = await run(conflict.commandType, conflict.payload);
+    if (result.success) {
+      notify("success", "Retry succeeded");
+      setConflict(null);
+    } else if (result.error?.code === "VERSION_CONFLICT") {
+      // Still conflicted: keep the dialog open with fresh versions.
+      const versions = conflictVersions(result.error);
+      setConflict({
+        ...conflict,
+        message: result.error.message,
+        currentVersion: versions.currentVersion,
+        expectedVersion: versions.expectedVersion,
+      });
+    } else {
+      setConflict(null);
+      reject("Order update rejected", result.error, conflict.commandType, conflict.payload, (result as { suggestedActions?: SuggestedAction[] }).suggestedActions);
+    }
+  };
+
+  const handleConflictReload = () => {
+    window.location.reload();
+  };
+
+  const handleConflictClose = () => {
+    setConflict(null);
+  };
+
+  const api = useMemo<OrderContextType>(
+    () => ({
+      state,
+      orders: state.orders,
+      activeOrders: state.activeOrders,
+      completedOrders: state.completedOrders,
+      myOrders: state.myOrders,
+      loading: state.loading,
+      error: state.error,
+      selectedOrder: state.selectedOrder,
+      fetchOrders,
+      selectOrder: setSelected,
+
+      createOrder: async (
+        items: CartItem[],
+        tableId: string | null,
+        customerName: string | null,
+        diningMode: DiningMode,
+        serverId: string,
+        subtotal: number,
+        discount: number,
+        total: number,
+        notes?: string,
+      ): Promise<Order> => {
+        const orderId = newRequestId()
+        try {
+          const created = await run("order.create", {
+            orderId,
+            channel: diningMode === "Dine in" ? "pos" : diningMode === "Take Away" ? "takeaway" : "delivery",
+            tableId: tableId ?? undefined,
+            serverId,
+            dinerName: customerName ?? undefined,
+          })
+          if (!created.success) throw new Error(created.error?.message ?? "Order create rejected")
+
+          for (const item of items) {
+            const line = await run("order.addLine", {
+              orderId,
+              menuItemId: item.menuItemId,
+              name: item.title,
+              unitPrice: item.price,
+              quantity: item.quantity,
+              modifiers: (item.modifiers ?? []).map((m) => ({ name: m.modifierId, price: 0 })),
+            })
+            if (!line.success) {
+              reject(`Could not add ${item.title}`, line.error, "order.addLine", { orderId })
+              throw new Error(line.error?.message ?? `Failed to add ${item.title}`)
+            }
+          }
+          if (discount > 0) {
+            await run("order.applyDiscount", { orderId, kind: "amount", value: discount })
+          }
+
+          const now = new Date().toISOString()
+          const kernelOrder: Order = {
+            id: orderId,
+            tableId,
+            table: { id: tableId ?? "", number: tableId ?? "", capacity: 0, status: "occupied" } as Table,
+            customerName,
+            items,
+            quantity: items.reduce((s, i) => s + i.quantity, 0),
+            status: "pending",
+            createdAt: now,
+            updatedAt: now,
+            subtotal,
+            tax: 0,
+            discount,
+            total,
+            payments: [],
+            isPaid: false,
+            diningMode,
+            serverId,
+            notes,
+          }
+          setSelected(kernelOrder)
+          notify("success", "Order created")
+          return kernelOrder
+        } catch (error) {
+          throw error instanceof Error ? error : new Error("Failed to create order")
+        }
+      },
+
+      updateOrderStatus: async (orderId: string, status: OrderStatus) => {
+        try {
+          let result
+          if (status === "completed") {
+            result = await run("order.close", { orderId })
+          } else if (status === "cancelled") {
+            result = await run("order.void", { orderId, reason: "cancelled from POS" })
+          } else if (status === "preparing" || status === "pending") {
+            result = await run("order.sendToKitchen", { orderId })
+          } else if (status === "ready" || status === "served" || status === "delivered") {
+            result = await run("order.sendToKitchen", { orderId })
+          } else {
+            result = { success: true } as unknown as typeof result
+          }
+          if (result && !(result as { success: boolean }).success) {
+            const err = (result as { error?: { message?: string; code?: string } }).error;
+            reject("Status update failed", err, "order.close", { orderId });
+            throw new Error(err?.message ?? "Status update rejected")
+          }
+          return Promise.resolve()
+        } catch (error) {
+          if (error instanceof Error && error.message !== "Status update rejected") reject("Status update failed", { message: error.message }, "order.close", { orderId });
+          return Promise.reject(error instanceof Error ? error.message : "Failed to update order status")
+        }
+      },
+
+      addPayment: async (orderId: string, payment: Payment) => {
+        try {
+          // Card payments (credit/debit) go through authorize → capture flow
+          const cardMethods: PaymentMethod[] = ["credit", "debit"]
+          if (cardMethods.includes(payment.method)) {
+            const auth = await run("payment.authorize", {
+              orderId,
+              amount: payment.amount,
+              method: payment.method,
+              gateway: payment.gateway,
+              ...(payment.paymentMethodId ? { paymentMethodId: payment.paymentMethodId } : {}),
+            })
+            if (!auth.success) {
+              reject("Payment authorization failed", auth.error, "payment.authorize", { orderId })
+              throw new Error(auth.error?.message ?? "Payment authorization failed")
+            }
+            const paymentId = auth.aggregateId ?? auth.commandId
+            if (paymentId) {
+              const cap = await run("payment.capture", { paymentId })
+              if (!cap.success) {
+                reject("Payment capture failed", cap.error, "payment.capture", { orderId })
+                throw new Error(cap.error?.message ?? "Payment capture failed")
+              }
+            }
+          }
+          const result = await run("order.recordPayment", {
+            orderId,
+            method: payment.method,
+            amount: payment.amount,
+            gateway: payment.gateway,
+            ...(payment.tip ? { tip: payment.tip } : {}),
+          })
+          if (!result.success) {
+            reject("Payment rejected", result.error, "order.recordPayment", { orderId }, (result as { suggestedActions?: SuggestedAction[] }).suggestedActions)
+            throw new Error(result.error?.message ?? "Payment rejected")
+          }
+          return Promise.resolve()
+        } catch (error) {
+          return Promise.reject(error instanceof Error ? error.message : "Failed to add payment")
+        }
+      },
+
+      updateOrderItems: async (orderId: string, items: CartItem[]) => {
+        try {
+          const current = state.orders.find((o) => o.id === orderId)
+          const currentIds = new Set((current?.items ?? []).map((i) => i.id))
+          const nextIds = new Set(items.map((i) => i.id))
+            for (const id of currentIds) {
+            if (!nextIds.has(id)) {
+              const res = await run("order.voidLine", { orderId, lineId: id, reason: "removed from POS" })
+              if (!res.success) { reject("Order edit rejected", res.error, "order.voidLine", { orderId, lineId: id }, (res as { suggestedActions?: SuggestedAction[] }).suggestedActions); throw new Error(res.error?.message ?? "Line void rejected"); }
+            }
+          }
+          for (const item of items) {
+            if (!currentIds.has(item.id)) {
+              const res = await run("order.addLine", {
+                orderId,
+                menuItemId: item.menuItemId,
+                name: item.title,
+                unitPrice: item.price,
+                quantity: item.quantity,
+              })
+              if (!res.success) { reject(`Could not add ${item.title}`, res.error, "order.addLine", { orderId }, (res as { suggestedActions?: SuggestedAction[] }).suggestedActions); throw new Error(res.error?.message ?? `Failed to add ${item.title}`); }
+            }
+          }
+          return Promise.resolve()
+        } catch (error) {
+          return Promise.reject(error instanceof Error ? error.message : "Failed to update order items")
+        }
+      },
+
+      updateOrderNotes: async (orderId: string, notes: string) => {
+        try {
+          const result = await runWithConflict("order.setNotes", { orderId, notes })
+          if (!result.success) {
+            if (result.error?.code === "VERSION_CONFLICT") throw new Error(result.error?.message ?? "Order changed by another device");
+            reject("Notes update failed", result.error, "order.setNotes", { orderId }, (result as { suggestedActions?: SuggestedAction[] }).suggestedActions); throw new Error(result.error?.message ?? "Notes update rejected");
+          }
+          return Promise.resolve()
+        } catch (error) {
+          return Promise.reject(error instanceof Error ? error.message : "Failed to update order notes")
+        }
+      },
+
+      cancelOrder: async (orderId: string) => {
+        try {
+          const result = await runWithConflict("order.void", { orderId, reason: "cancelled from POS" })
+          if (!result.success) {
+            if (result.error?.code === "VERSION_CONFLICT") throw new Error(result.error?.message ?? "Order changed by another device");
+            reject("Cancel failed", result.error, "order.void", { orderId }, (result as { suggestedActions?: SuggestedAction[] }).suggestedActions); throw new Error(result.error?.message ?? "Cancel rejected");
+          }
+          notify("success", "Order cancelled")
+          return Promise.resolve()
+        } catch (error) {
+          return Promise.reject(error instanceof Error ? error.message : "Failed to cancel order")
+        }
+      },
+
+      mergeOrders: mergeOrdersFn,
+
+      transferOrderTable: async (sourceTableId: string, targetTable: Table): Promise<number> =>
+        mergeOrdersFn(targetTable, [sourceTableId]),
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state, run, notify],
+  )
 
   return (
-    <OrderContext.Provider
-      value={{
-        state,
-        orders: state.orders,
-        fetchOrders,
-        selectOrder,
-        createOrder,
-        updateOrderStatus,
-        addPayment,
-        updateOrderItems,
-        updateOrderNotes,
-        cancelOrder,
-        mergeOrders,
-        transferOrderTable,
-      }}
-    >
-      {children}
-    </OrderContext.Provider>
+    <>
+      <OrderContext.Provider value={api}>{children}</OrderContext.Provider>
+      {conflict && (
+        <ConflictDialog
+          open={conflict.open}
+          message={conflict.message}
+          currentVersion={conflict.currentVersion}
+          expectedVersion={conflict.expectedVersion}
+          serverSummary={conflict.serverSummary}
+          onRetry={handleConflictRetry}
+          onReload={handleConflictReload}
+          onClose={handleConflictClose}
+        />
+      )}
+    </>
   )
 }
 

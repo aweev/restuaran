@@ -269,34 +269,12 @@ export type PermissionName =
   // Communication permissions
   | "send_messages"
 
-export interface User {
-  id: string
-  name: string
-  email: string
-  role: UserRole
-  permissions?: PermissionName[]
-  customPermissions?: PermissionName[]
-  avatar?: string
-  shifts?: UserShift[]
-}
+// Canonical identity types live in ./auth (the shape AuthContext uses).
+// Re-exported here so `@/types` stays a valid source for User/AuthState.
+export type { User, UserShift, AuthState } from "./auth"
 
-export interface UserShift {
-  id: string
-  userId: string
-  startTime: string
-  endTime?: string
-  totalHours?: number
-  notes?: string
-}
-
-export interface AuthState {
-  user: User | null
-  isAuthenticated: boolean
-  token: string | null
-  loading: boolean
-  error: string | null
-  currentShift: UserShift | null
-}
+// Re-export aliases for backward compatibility (single canonical User/AuthState).
+export type { User as LegacyUser, AuthState as LegacyAuthState } from "./auth"
 
 export interface LoginCredentials {
   email: string
@@ -434,22 +412,6 @@ export const ROLE_PERMISSIONS: Record<UserRole, PermissionName[]> = {
   ],
 }
 
-export interface User {
-  id: string
-  name: string
-  email: string
-  role: UserRole
-  avatar?: string
-}
-
-export interface AuthState {
-  user: User | null
-  isAuthenticated: boolean
-  token: string | null
-  loading: boolean
-  error: string | null
-}
-
 // ====== MENU ======
 
 export type MenuCategory =
@@ -548,6 +510,7 @@ export interface CartItem {
   modifiers?: CartModifierSelection[]
   specialInstructions?: string
   totalPrice: number
+  course?: number
 }
 
 export type DiningMode = "Dine in" | "Take Away" | "Delivery"
@@ -558,7 +521,6 @@ export interface CartState {
   customerName: string | null
   diningMode: DiningMode
   subtotal: number
-  tax: number
   total: number
   discount: number
   discountCode?: string
@@ -985,6 +947,9 @@ export interface Payment {
   amount: number
   reference?: string
   timestamp: string
+  gateway?: PaymentGateway
+  paymentMethodId?: string
+  tip?: number
 }
 
 export interface Order {
@@ -1012,6 +977,8 @@ export interface Order {
   diningMode: DiningMode
   serverId: string
   notes?: string
+  /** Courses the kitchen has parked (held); projected from the kernel read model. */
+  heldCourses?: number[]
 }
 
 export interface OrderData {
@@ -1167,19 +1134,32 @@ export interface Customer {
   totalSpent: number
 }
 
+/**
+ * Deprecated: LoyaltyCustomer is superseded by the kernel's CustomerAggregate.
+ * Use `CustomerState` / `LoyaltyTier` from `@/kernel/aggregates/customer.aggregate`
+ * as the canonical customer identity. Orders now reference the kernel customer
+ * UUID via the `customerId` field on `order.created`, so there is a single
+ * customer identity across the whole system.
+ *
+ * The duplicate `LoyaltyCustomer` shape (REST `/api/customer/loyalty/*`) is
+ * retained only for backward compatibility with the self-service loyalty page
+ * during the migration period.
+ */
+/** @deprecated Use CustomerState from @/kernel/aggregates/customer.aggregate */
 export interface LoyaltyCustomer {
   id: string
   name: string
   email: string
   phone: string
   points: number
-  tier: "bronze" | "silver" | "gold" | "platinum"
+  tier: "bronze" | "silver" | "gold" | " platinum"
   joinDate: string
   lastActivity: string
   totalSpent: number
   visitsCount: number
 }
 
+/** @deprecated Use LoyaltyReward from @/kernel/aggregates/customer.aggregate */
 export interface LoyaltyReward {
   id: string
   name: string
@@ -1305,17 +1285,6 @@ export interface KitchenItemDeleteData {
   orderId: string
 }
 
-export interface KitchenOrderEvent {
-  type: "kitchen_order_update" | "kitchen_order_delete";
-  data: KitchenOrderUpdateData | KitchenOrderDeleteData;
-}
-
-export interface KitchenItemEvent {
-  type: "kitchen_item_update" | "kitchen_item_delete";
-  orderId: string;
-  data: KitchenItemUpdateData | KitchenItemDeleteData;
-}
-
 export interface KitchenOrderUpdateEvent {
   type: "kitchen_order_update";
   data: KitchenOrderUpdate;
@@ -1338,16 +1307,6 @@ export interface KitchenItemDeleteEvent {
   data: KitchenItemDeleteData;
 }
 
-export interface KitchenOrderEvent {
-  type: "kitchen_order_update" | "kitchen_order_delete";
-  data: KitchenOrderUpdateData | KitchenOrderDeleteData;
-}
-
-export interface KitchenItemEvent {
-  type: "kitchen_item_update" | "kitchen_item_delete";
-  orderId: string;
-  data: KitchenItemUpdateData | KitchenItemDeleteData;
-}
 export interface KitchenEvent {
   type: "kitchen_order_update" | "kitchen_item_update";
   data: KitchenOrderUpdate | KitchenItemUpdate;

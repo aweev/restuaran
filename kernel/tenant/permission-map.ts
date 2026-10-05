@@ -11,18 +11,38 @@ export interface AuthPayload {
 // Kernel capabilities are intentionally decoupled from any single RBAC taxonomy.
 // This adapter maps the host app's granular permission names (and role defaults)
 // onto the coarse capabilities the kernel checks.
-const GRANULAR_TO_CAPABILITY: Record<string, string[]> = {
+//
+// Own vs any is now honored end to end: `order:edit_own` grants the scoped
+// `order:edit_own` capability (order handlers check this), while `order:edit`
+// is the full any-ticket capability. The `orderSectionPolicy` vetoes
+// edit_own-only actors on another server's ticket. Managers/admins/cashiers
+// hold both; servers hold only the scoped one.
+export const GRANULAR_TO_CAPABILITY: Record<string, string[]> = {
   // Phase 3 integrations (webhooks, outbound deliveries)
   "integration:manage_webhooks": ["integration:manage"],
   "integration:view_deliveries": ["integration:view"],
   "order:create": ["order:create"],
-  "order:edit_own": ["order:edit"],
+  "order:edit_own": ["order:edit_own"],
   "order:edit_any": ["order:edit"],
   "order:change_status": ["order:process"],
-  "order:process_payment": ["order:pay", "order:edit"],
+  "order:process_payment": ["order:pay", "order:edit_own"],
   "order:issue_refund": ["order:pay"],
-  "order:split_bill": ["order:edit"],
-  "order:transfer_items": ["order:edit"],
+  "order:split_bill": ["order:edit_own"],
+  "order:transfer_items": ["order:edit_own"],
+  // Comping and discounting are revenue-affecting giveaways. Kept as a distinct
+  // capability from `order:edit` precisely so a server can never comp a check
+  // just because they can ring items onto it.
+  "order:comp_items": ["order:comp"],
+  "order:apply_discount": ["order:comp"],
+  "order:waive_tax": ["order:comp"],
+  // Customers, loyalty, feedback
+  "customer:create": ["customer:manage"],
+  "customer:edit": ["customer:manage"],
+  "customer:adjust_points": ["customer:manage"],
+  "customer:manage_rewards": ["customer:manage"],
+  "customer:view": ["customer:view"],
+  "customer:view_pii": ["customer:view_pii"],
+  "feedback:create": ["feedback:submit"],
   "order:view_all": ["order:view"],
   "order:view_assigned": ["order:view"],
   "table:change_status": ["table:edit"],
@@ -57,51 +77,74 @@ const GRANULAR_TO_CAPABILITY: Record<string, string[]> = {
   "user:manage_shifts": ["staff:schedule", "staff:view"],
   "user:view_list": ["staff:view"],
   "user:view_details": ["staff:view"],
+  // Gift cards & promotions
+  "giftcard:view": ["giftcard:view"],
+  "giftcard:manage": ["giftcard:view", "giftcard:manage"],
+  "promotion:view": ["promotion:view"],
+  "promotion:manage": ["promotion:view", "promotion:manage"],
   // Audit
   "audit_log:view": ["audit:view"],
+  // Reporting reads the sales board (order:view-gated). Kept as an explicit
+  // mapping so a JWT carrying report:view/export gets a working capability
+  // instead of a silent 403.
+  "report:view": ["order:view"],
+  "report:export": ["order:view"],
 }
 
-const ROLE_TO_CAPABILITIES: Record<string, string[]> = {
+export const ROLE_TO_CAPABILITIES: Record<string, string[]> = {
   admin: [
-    "order:create", "order:edit", "order:process", "order:pay", "order:view",
+    "order:create", "order:edit", "order:edit_own", "order:process", "order:pay", "order:view", "order:comp",
     "table:create", "table:edit", "table:view",
     "inventory:create", "inventory:edit", "inventory:view",
     "reservation:view", "reservation:manage",
     "waitlist:view", "waitlist:manage",
     "menu:view", "menu:manage",
+    "venue:view", "venue:manage",
+    "customer:view", "customer:manage", "customer:view_pii", "feedback:submit",
+    "giftcard:view", "giftcard:manage", "promotion:view", "promotion:manage",
     "staff:view", "staff:schedule", "staff:clock",
     "integration:view", "integration:manage",
     "audit:view",
   ],
   manager: [
-    "order:create", "order:edit", "order:process", "order:pay", "order:view",
+    "order:create", "order:edit", "order:edit_own", "order:process", "order:pay", "order:view", "order:comp",
     "table:create", "table:edit", "table:view",
     "inventory:create", "inventory:edit", "inventory:view",
     "reservation:view", "reservation:manage",
     "waitlist:view", "waitlist:manage",
     "menu:view", "menu:manage",
+    "venue:view", "venue:manage",
+    "customer:view", "customer:manage", "customer:view_pii", "feedback:submit",
+    "giftcard:view", "giftcard:manage", "promotion:view", "promotion:manage",
     "staff:view", "staff:schedule", "staff:clock",
     "integration:view", "integration:manage",
     "audit:view",
   ],
   owner: [
-    "order:create", "order:edit", "order:process", "order:pay", "order:view",
+    "order:create", "order:edit", "order:edit_own", "order:process", "order:pay", "order:view", "order:comp",
     "table:create", "table:edit", "table:view",
     "inventory:create", "inventory:edit", "inventory:view",
     "reservation:view", "reservation:manage",
     "waitlist:view", "waitlist:manage",
     "menu:view", "menu:manage",
+    "venue:view", "venue:manage",
+    "customer:view", "customer:manage",
+    "giftcard:view", "giftcard:manage", "promotion:view", "promotion:manage",
     "staff:view", "staff:schedule",
     "integration:view", "integration:manage",
     "audit:view",
   ],
-  waiter: ["order:create", "order:edit", "order:view", "table:view", "table:edit", "reservation:view", "waitlist:view", "menu:view"],
-  server: ["order:create", "order:edit", "order:view", "table:view", "table:edit", "reservation:view", "waitlist:view", "menu:view"],
-  host: ["reservation:view", "reservation:manage", "waitlist:view", "waitlist:manage", "table:view"],
-  "host_staff": ["reservation:view", "reservation:manage", "waitlist:view", "waitlist:manage", "table:view"],
-  cashier: ["order:create", "order:edit", "order:pay", "order:view", "table:view", "reservation:view", "menu:view"],
+  waiter: ["order:create", "order:edit_own", "order:view", "table:view", "table:edit", "reservation:view", "reservation:manage", "waitlist:view", "waitlist:manage", "menu:view", "customer:view", "customer:manage", "promotion:view"],
+  server: ["order:create", "order:edit_own", "order:view", "table:view", "table:edit", "reservation:view", "reservation:manage", "waitlist:view", "waitlist:manage", "menu:view", "customer:view", "customer:manage", "promotion:view"],
+  host: ["reservation:view", "reservation:manage", "waitlist:view", "waitlist:manage", "table:view", "customer:view"],
+  "host_staff": ["reservation:view", "reservation:manage", "waitlist:view", "waitlist:manage", "table:view", "customer:view"],
+  cashier: ["order:create", "order:edit", "order:edit_own", "order:pay", "order:view", "table:view", "reservation:view", "menu:view", "customer:view", "customer:manage", "feedback:submit", "giftcard:view", "giftcard:manage", "promotion:view"],
   kitchen: ["order:view", "order:process", "inventory:view", "menu:view"],
-  staff: ["order:create", "order:edit", "order:view", "table:view", "menu:view", "staff:clock"],
+  // Mirrors types/auth.ts ROLE_PERMISSIONS. Both were absent here, so JWTs for
+  // these roles derived zero capabilities and every kernel call 403'd.
+  bartender: ["order:create", "order:edit", "order:edit_own", "order:view", "order:pay", "table:view", "menu:view"],
+  delivery: ["order:view", "order:process", "table:view", "menu:view"],
+  staff: ["order:create", "order:edit_own", "order:view", "table:view", "menu:view", "staff:clock"],
 }
 
 export function deriveCapabilities(payload: AuthPayload): string[] {

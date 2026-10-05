@@ -1,10 +1,9 @@
 "use client"
 
-import { createContext, useReducer, useContext, useEffect, useCallback, type ReactNode } from "react"
+import { createContext, useReducer, useContext, useCallback, useMemo, type ReactNode } from "react"
 import type { PaymentState, PaymentDetails, Discount } from "@/types/payment"
-import { useAuth } from "./AuthContext"
+import { useCommand, useKernel } from "@/kernel/react/kernel-provider"
 
-// Initial state
 const initialState: PaymentState = {
   payments: [],
   activePayment: null,
@@ -15,7 +14,6 @@ const initialState: PaymentState = {
   promoCode: null,
 }
 
-// Action types
 type PaymentAction =
   | { type: "FETCH_PAYMENTS_START" }
   | { type: "FETCH_PAYMENTS_SUCCESS"; payload: PaymentDetails[] }
@@ -29,86 +27,45 @@ type PaymentAction =
   | { type: "REMOVE_DISCOUNT" }
   | { type: "SET_PROMO_CODE"; payload: string | null }
 
-// Reducer
 const paymentReducer = (state: PaymentState, action: PaymentAction): PaymentState => {
   switch (action.type) {
     case "FETCH_PAYMENTS_START":
-      return {
-        ...state,
-        loading: true,
-        error: null,
-      }
+      return { ...state, loading: true, error: null }
     case "FETCH_PAYMENTS_SUCCESS":
-      return {
-        ...state,
-        payments: action.payload,
-        loading: false,
-      }
+      return { ...state, payments: action.payload, loading: false }
     case "FETCH_PAYMENTS_FAILURE":
-      return {
-        ...state,
-        loading: false,
-        error: action.payload,
-      }
+      return { ...state, loading: false, error: action.payload }
     case "SET_ACTIVE_PAYMENT":
-      return {
-        ...state,
-        activePayment: action.payload,
-      }
+      return { ...state, activePayment: action.payload }
     case "ADD_PAYMENT":
-      return {
-        ...state,
-        payments: [...state.payments, action.payload],
-      }
+      return { ...state, payments: [...state.payments, action.payload] }
     case "FETCH_DISCOUNTS_START":
-      return {
-        ...state,
-        loading: true,
-        error: null,
-      }
+      return { ...state, loading: true, error: null }
     case "FETCH_DISCOUNTS_SUCCESS":
-      return {
-        ...state,
-        discounts: action.payload,
-        loading: false,
-      }
+      return { ...state, discounts: action.payload, loading: false }
     case "FETCH_DISCOUNTS_FAILURE":
-      return {
-        ...state,
-        loading: false,
-        error: action.payload,
-      }
+      return { ...state, loading: false, error: action.payload }
     case "APPLY_DISCOUNT":
-      return {
-        ...state,
-        appliedDiscountId: action.payload,
-      }
+      return { ...state, appliedDiscountId: action.payload }
     case "REMOVE_DISCOUNT":
-      return {
-        ...state,
-        appliedDiscountId: null,
-      }
+      return { ...state, appliedDiscountId: null }
     case "SET_PROMO_CODE":
-      return {
-        ...state,
-        promoCode: action.payload,
-      }
+      return { ...state, promoCode: action.payload }
     default:
       return state
   }
 }
 
-// Create context
 interface PaymentContextType {
   state: PaymentState
   fetchPayments: (orderId?: string) => Promise<void>
   setActivePayment: (payment: PaymentDetails | null) => void
   addPayment: (payment: PaymentDetails) => Promise<void>
   fetchDiscounts: () => Promise<void>
-  applyDiscount: (discountId: string) => void
-  removeDiscount: () => void
+  applyDiscount: (discountId: string, amount: number) => Promise<void>
+  removeDiscount: () => Promise<void>
   setPromoCode: (code: string | null) => void
-  validatePromoCode: (code: string) => Promise<{
+  validatePromoCode: (code: string, subtotal?: number) => Promise<{
     valid: boolean
     discountType?: "percentage" | "fixed"
     discountValue?: number
@@ -118,163 +75,178 @@ interface PaymentContextType {
 
 const PaymentContext = createContext<PaymentContextType | undefined>(undefined)
 
-// Provider component
 export const PaymentProvider = ({ children }: { children: ReactNode }) => {
   const [state, dispatch] = useReducer(paymentReducer, initialState)
-  const { state: authState } = useAuth()
+  const { run } = useCommand()
+  const { ask } = useKernel()
 
-
-  // Actions
-  const fetchPayments = async (orderId?: string) => {
+  const fetchPayments = useCallback(async (orderId?: string) => {
+    if (!orderId) {
+      dispatch({ type: "FETCH_PAYMENTS_SUCCESS", payload: [] })
+      return
+    }
     dispatch({ type: "FETCH_PAYMENTS_START" })
     try {
-      const url = orderId ? `/api/orders/${orderId}/payments` : "/api/payments"
-      const response = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${authState.token}`,
-        },
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch payments")
+      const result = await ask("get.order", { orderId })
+      if (!result.success) {
+        throw new Error(result.error.message)
       }
-
-      const data = await response.json()
-
-      dispatch({
-        type: "FETCH_PAYMENTS_SUCCESS",
-        payload: data,
-      })
+      const orderState = (result.data as { state?: { payments?: PaymentDetails[] } }).state
+      const payments = orderState?.payments ?? []
+      const formattedPayments: PaymentDetails[] = payments.map(p => ({
+        id: p.id || `pay-${Date.now()}`,
+        orderId,
+        method: (p.method || "cash") as PaymentDetails["method"],
+        amount: Number(p.amount ?? 0),
+        tip: Number(p.tip ?? 0),
+        reference: p.reference,
+        transactionId: p.transactionId,
+        timestamp: p.timestamp || new Date().toISOString(),
+        gateway: p.gateway,
+        metadata: p.metadata,
+      }))
+      dispatch({ type: "FETCH_PAYMENTS_SUCCESS", payload: formattedPayments })
     } catch (error) {
       dispatch({
         type: "FETCH_PAYMENTS_FAILURE",
         payload: error instanceof Error ? error.message : "Failed to fetch payments",
       })
     }
-  }
+  }, [ask])
 
-  const setActivePayment = (payment: PaymentDetails | null) => {
+  const setActivePayment = useCallback((payment: PaymentDetails | null) => {
     dispatch({ type: "SET_ACTIVE_PAYMENT", payload: payment })
-  }
+  }, [])
 
-  const addPayment = async (payment: PaymentDetails) => {
-    try {
-      const response = await fetch(`/api/orders/${payment.orderId}/payments`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authState.token}`,
-        },
-        body: JSON.stringify(payment),
+  const addPayment = useCallback(async (payment: PaymentDetails) => {
+    const cardMethods: Array<PaymentDetails["method"]> = ["credit", "debit"]
+    // Card payments go through the authorize → capture flow (Stripe Terminal
+    // when ROS_PAYMENT_PROVIDER=stripe-terminal, simulated/manual otherwise)
+    // so declines are surfaced before the order records revenue.
+    if (cardMethods.includes(payment.method)) {
+      const auth = await run("payment.authorize", {
+        orderId: payment.orderId,
+        amount: payment.amount,
+        method: payment.method,
+        gateway: payment.gateway,
       })
-
-      if (!response.ok) {
-        throw new Error("Failed to add payment")
+      if (!auth.success) {
+        throw new Error(auth.error.message)
       }
-
-      const newPayment = await response.json()
-
-      dispatch({
-        type: "ADD_PAYMENT",
-        payload: newPayment,
-      })
-
-      return Promise.resolve()
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error.message : "Failed to add payment")
+      const paymentId = auth.success ? (auth.aggregateId ?? undefined) : undefined
+      if (paymentId) {
+        const cap = await run("payment.capture", { paymentId })
+        if (!cap.success) {
+          throw new Error(cap.error.message)
+        }
+      }
     }
-  }
+    const result = await run("order.recordPayment", {
+      orderId: payment.orderId,
+      method: payment.method,
+      amount: payment.amount,
+      gateway: payment.gateway,
+      ...(payment.tip ? { tip: payment.tip } : {}),
+    })
+    if (!result.success) {
+      throw new Error(result.error.message)
+    }
+    dispatch({
+      type: "ADD_PAYMENT",
+      payload: payment,
+    })
+  }, [run, dispatch])
 
-  // Memoized so the mount effect below can list it as a dependency without
-  // re-fetching on every render.
   const fetchDiscounts = useCallback(async () => {
     dispatch({ type: "FETCH_DISCOUNTS_START" })
     try {
-      const response = await fetch("/api/discounts", {
-        headers: {
-          Authorization: `Bearer ${authState.token}`,
-        },
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch discounts")
+      const result = await ask("list.promotions", { active: true })
+      if (!result.success) {
+        throw new Error(result.error.message)
       }
-
-      const data = await response.json()
-
-      dispatch({
-        type: "FETCH_DISCOUNTS_SUCCESS",
-        payload: data,
-      })
+      const rows = result.data as Array<{
+        promotionId: string
+        code: string
+        name: string
+        kind: string
+        value: number | string
+        active: boolean
+      }>
+      const discounts: Discount[] = rows.map(row => ({
+        id: row.promotionId,
+        name: row.name,
+        code: row.code,
+        type: row.kind === "percent" ? "percentage" : "fixed",
+        value: Number(row.value),
+        active: row.active,
+      }))
+      dispatch({ type: "FETCH_DISCOUNTS_SUCCESS", payload: discounts })
     } catch (error) {
       dispatch({
         type: "FETCH_DISCOUNTS_FAILURE",
         payload: error instanceof Error ? error.message : "Failed to fetch discounts",
       })
     }
-  }, [authState.token])
+  }, [ask])
 
-  // Fetch payments when component mounts and user is authenticated
-  useEffect(() => {
-    if (authState.isAuthenticated) {
-      fetchDiscounts()
-    }
-  }, [authState.isAuthenticated, fetchDiscounts])
+  const applyDiscount = useCallback(async (_discountId: string, _amount: number) => {
+    dispatch({ type: "APPLY_DISCOUNT", payload: _discountId })
+  }, [])
 
-  const applyDiscount = (discountId: string) => {
-    dispatch({ type: "APPLY_DISCOUNT", payload: discountId })
-  }
-
-  const removeDiscount = () => {
+  const removeDiscount = useCallback(async () => {
     dispatch({ type: "REMOVE_DISCOUNT" })
-  }
+  }, [])
 
-  const setPromoCode = (code: string | null) => {
+  const setPromoCode = useCallback((code: string | null) => {
     dispatch({ type: "SET_PROMO_CODE", payload: code })
-  }
+  }, [])
 
-  const validatePromoCode = async (code: string) => {
+  const validatePromoCode = useCallback(async (code: string, subtotal: number = 0) => {
     try {
-      const response = await fetch(`/api/discounts/promo/${code}`, {
-        headers: {
-          Authorization: `Bearer ${authState.token}`,
-        },
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to validate promo code")
+      const result = await ask("promotion.evaluate", { code, subtotal })
+      if (!result.success) {
+        return {
+          valid: false,
+          message: result.error.message,
+        }
       }
-
-      return await response.json()
-    } catch (error) {
-      console.error("Error validating promo code:", error)
+      const data = result.data as {
+        kind?: string
+        value?: number | string
+        applicable?: boolean
+      }
+      return {
+        valid: true,
+        discountType: data.kind === "percent" ? ("percentage" as const) : ("fixed" as const),
+        discountValue: typeof data.value === "number" ? data.value : Number(data.value) || 0,
+        message: "Promo code applied",
+      }
+    } catch (_error) {
       return {
         valid: false,
         message: "Error validating promo code",
       }
     }
-  }
+  }, [ask])
 
-  return (
-    <PaymentContext.Provider
-      value={{
-        state,
-        fetchPayments,
-        setActivePayment,
-        addPayment,
-        fetchDiscounts,
-        applyDiscount,
-        removeDiscount,
-        setPromoCode,
-        validatePromoCode,
-      }}
-    >
-      {children}
-    </PaymentContext.Provider>
+  const contextValue = useMemo<PaymentContextType>(
+    () => ({
+      state,
+      fetchPayments,
+      setActivePayment,
+      addPayment,
+      fetchDiscounts,
+      applyDiscount,
+      removeDiscount,
+      setPromoCode,
+      validatePromoCode,
+    }),
+    [state, fetchPayments, setActivePayment, addPayment, fetchDiscounts, applyDiscount, removeDiscount, setPromoCode, validatePromoCode],
   )
+
+  return <PaymentContext.Provider value={contextValue}>{children}</PaymentContext.Provider>
 }
 
-// Custom hook
 export const usePayment = () => {
   const context = useContext(PaymentContext)
   if (context === undefined) {

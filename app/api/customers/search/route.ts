@@ -1,42 +1,48 @@
 import { type NextRequest, NextResponse } from "next/server"
-import prisma from "@/lib/prisma"
 import { withAuth } from "@/middleware/auth-middleware"
+import { sqlWrite, toNum, toIso } from "@/lib/db-helpers"
 
-// GET - Search customers
+/**
+ * Server-side search so the omnibar never has to pull the whole customer table
+ * to the browser. The previous implementation used Prisma's `mode: "insensitive"`
+ * `contains`, which has no plain-SQL equivalent — hence the explicit ILIKE.
+ */
 export const GET = withAuth(async (req: NextRequest) => {
   try {
     const { searchParams } = new URL(req.url)
-    const query = searchParams.get("q") || ""
+    const q = (searchParams.get("q") ?? "").trim()
+    const take = Math.min(Number(searchParams.get("take") ?? 20) || 20, 100)
 
-    if (!query) {
-      // If no query, return all customers
-      const customers = await prisma.customer.findMany({
-        orderBy: {
-          name: "asc",
-        },
-        take: 20, // Limit to 20 results
-      })
+    // Escape LIKE metacharacters so a query of "100%" cannot match everything.
+    const escaped = q.replace(/[\\%_]/g, (c) => `\\${c}`)
+    const pattern = `%${escaped}%`
 
-      return NextResponse.json(customers)
-    }
+    const rows = q
+      ? await sqlWrite(
+          `SELECT * FROM "Customer"
+            WHERE name ILIKE $1 ESCAPE '\\'
+               OR email ILIKE $1 ESCAPE '\\'
+               OR phone ILIKE $1 ESCAPE '\\'
+            ORDER BY LOWER(name) ASC
+            LIMIT $2`,
+          [pattern, take],
+        )
+      : await sqlWrite(
+          `SELECT * FROM "Customer" ORDER BY LOWER(name) ASC LIMIT $1`,
+          [take],
+        )
 
-    // Search customers by name, email, or phone
-    const customers = await prisma.customer.findMany({
-      where: {
-        OR: [
-          { name: { contains: query, mode: "insensitive" } },
-          { email: { contains: query, mode: "insensitive" } },
-          { phone: { contains: query, mode: "insensitive" } },
-        ],
-      },
-      orderBy: {
-        name: "asc",
-      },
-    })
-
-    return NextResponse.json(customers)
+    return NextResponse.json(
+      rows.map((r) => ({
+        ...r,
+        visitCount: toNum(r.visitCount),
+        totalSpent: toNum(r.totalSpent),
+        lastVisit: toIso(r.lastVisit),
+      })),
+    )
   } catch (error) {
-    console.error("Error searching customers:", error)
+    console.error("[customers] search failed:", error)
     return NextResponse.json({ error: "Failed to search customers" }, { status: 500 })
   }
 })
+

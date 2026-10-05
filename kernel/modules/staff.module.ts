@@ -4,6 +4,8 @@ import { defineCommand } from "@/kernel/commands/define-command"
 import { QueryHandler } from "@/kernel/queries/query-bus"
 import { StaffShiftAggregate } from "@/kernel/aggregates/shift.aggregate"
 import { RosModule, ModuleRuntime } from "@/kernel/modules/module-registry"
+import { StaffBoardState as StaffBoardProjectionState } from "@/kernel/projections/staff-board"
+import { maybePaginate } from "@/kernel/projections/projection"
 
 export interface ShiftRow {
   id: string
@@ -33,38 +35,11 @@ function toRow(agg: { id: string; state: StaffShiftAggregate["state"] }, workedS
 }
 
 /**
- * Live staffing board, recomputed from the event log. Worked-time math lives in
- * exactly one place (the aggregate) instead of a duplicated reducer, so
- * break/clock edge cases can never drift between write and read models.
+ * NOTE: this board used to be recomputed from the full event log on *every*
+ * query (`computeStaffBoard`), which made the Staff screen's cost grow with the
+ * venue's history. It is now served from the `staff.board` projection; the
+ * `ShiftRow` shape below is the module's own query contract and is preserved.
  */
-export async function computeStaffBoard(
-  store: ModuleRuntime["events"],
-  tenant: ModuleRuntime["tenant"]
-): Promise<StaffBoardState> {
-  const events = await store.query({
-    tenant,
-    eventTypes: ["shift.scheduled", "shift.clockedIn", "shift.breakStarted", "shift.breakEnded", "shift.clockedOut"],
-  })
-  const byId = new Map<string, Omit<StoredEvent, "globalPosition">[]>()
-  for (const e of events) {
-    const list = byId.get(e.aggregateId) ?? []
-    list.push(e)
-    byId.set(e.aggregateId, list)
-  }
-  const onShift: ShiftRow[] = []
-  const history: ShiftRow[] = []
-  for (const [id, list] of byId) {
-    const agg = new StaffShiftAggregate(tenant)
-    ;(agg as unknown as { initialize(id: string): void }).initialize(id)
-    for (const e of list) {
-      ;(agg as unknown as { replay(e: object): void }).replay(e)
-    }
-    const row = toRow(agg, agg.workedSeconds())
-    if (row.status === "clocked_in" || row.status === "on_break") onShift.push(row)
-    else if (row.status === "clocked_out") history.push(row)
-  }
-  return { onShift, history }
-}
 
 const schedule = defineCommand({
   commandType: "staff.scheduleShift",
@@ -161,8 +136,29 @@ const getShift: QueryHandler = {
 const listStaffing: QueryHandler = {
   queryType: "list.staffing.board",
   requiredPermission: "staff:view",
-  async handle(_params, ctx) {
-    return computeStaffBoard(ctx.events, ctx.tenant)
+  async handle(params, ctx) {
+    // Served from the `staff.board` projection rather than replaying the whole
+    // log per call, but the response shape is unchanged so existing consumers
+    // (and the worked-time semantics) are preserved exactly.
+    const { rows } = ctx.projections.get<StaffBoardProjectionState>("staff.board").state
+    const onShift: ShiftRow[] = []
+    const history: ShiftRow[] = []
+    for (const r of rows) {
+      const row: ShiftRow = {
+        id: r.shiftId,
+        staffId: r.staffId,
+        position: r.position,
+        status: r.status === "on-shift" ? "clocked_in" : r.status === "break" ? "on_break" : "clocked_out",
+        clockInAt: r.clockedInAt,
+        clockOutAt: r.clockOutAt,
+        workedMinutes: Math.round(r.hoursWorked * 60),
+      }
+      if (r.status === "on-shift" || r.status === "break") onShift.push(row)
+      else if (r.status === "off") history.push(row)
+    }
+    if (params.limit == null && params.cursor == null) return { onShift, history }
+    const page = maybePaginate(history, params) as { rows: ShiftRow[]; nextCursor: string | null; total: number }
+    return { onShift, history: page.rows, nextCursor: page.nextCursor, total: page.total }
   },
 }
 

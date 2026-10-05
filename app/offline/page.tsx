@@ -3,8 +3,11 @@
 import { Button } from "@/components/ui/button"
 import { WifiOff, RefreshCw } from "lucide-react"
 import Link from "next/link"
+import { OfflineQueuePanel } from "@/components/pos/offline-queue-panel"
+import { useKernel } from "@/kernel/react/kernel-provider"
 
 export default function OfflinePage() {
+  const { pendingCount, connection } = useKernel()
   return (
     <div className="flex min-h-screen flex-col items-center justify-center p-4">
       <div className="mx-auto flex w-full max-w-md flex-col items-center space-y-6 text-center">
@@ -17,9 +20,16 @@ export default function OfflinePage() {
           <p className="text-muted-foreground">
             It looks like you&apos;ve lost your internet connection. Some features may be limited until you&apos;re back online.
           </p>
+          <p className="text-sm font-medium" aria-live="polite">
+            {pendingCount} queued change{pendingCount === 1 ? "" : "s"} waiting to sync · {connection}
+          </p>
         </div>
 
-        <div className="space-y-2">
+        <div className="w-full text-left">
+          <OfflineQueuePanel />
+        </div>
+
+        <div className="w-full space-y-2">
           <Button
             className="w-full"
             onClick={() => {

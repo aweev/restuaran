@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto"
 import { ActorContext, AttributeBag, Id, kernelError, TenantContext } from "@/kernel/types"
 import { Aggregate, AggregateEvent } from "@/kernel/aggregates/aggregate"
+import { validateTargetUrl } from "./webhooks"
 
 export const WILDCARD_EVENT_TYPE = "*"
 
@@ -31,6 +32,25 @@ export function assertWebhookUrl(url: string): void {
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw kernelError("INVALID_WEBHOOK_URL", `Webhook URL must be http(s): "${url}"`)
+  }
+  // Validate against SSRF - this is synchronous check, full validation happens at delivery time
+  const hostname = parsed.hostname
+  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") {
+    throw kernelError("INVALID_WEBHOOK_URL", `Webhook URL cannot target localhost: "${url}"`)
+  }
+  // Check for private IP ranges in URL directly
+  const privateIpPatterns = [
+    /^10\./,
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
+    /^192\.168\./,
+    /^127\./,
+    /^169\.254\./,
+    /^::1$/,
+    /^fc/,
+    /^fd/,
+  ]
+  if (privateIpPatterns.some((p) => p.test(hostname))) {
+    throw kernelError("INVALID_WEBHOOK_URL", `Webhook URL cannot target private IP: "${url}"`)
   }
 }
 

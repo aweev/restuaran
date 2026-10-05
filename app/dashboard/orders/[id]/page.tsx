@@ -18,6 +18,10 @@ import { OrderSocketIntegration } from "@/components/orders/order-socket-integra
 import { Loader2, Printer, ArrowLeft, Edit, Ban, Clock } from "lucide-react"
 import { formatDistanceToNow, format } from "date-fns"
 import type { Order, OrderStatus } from "@/types"
+import { useCommand } from "@/kernel/react/kernel-provider"
+import { printReceipt } from "@/components/pos/receipt"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 
 export default function OrderDetailsPage() {
   const params = useParams()
@@ -28,6 +32,10 @@ export default function OrderDetailsPage() {
   const [isEditing, setIsEditing] = useState(false)
   const [isCancelling, setIsCancelling] = useState(false)
   const [isProcessingStatusUpdate, setIsProcessingStatusUpdate] = useState(false)
+  const [ways, setWays] = useState(2)
+  const [splitPaid, setSplitPaid] = useState<boolean[]>([])
+  const [cashTendered, setCashTendered] = useState("")
+  const { run } = useCommand()
 
   const orderId = params.id as string
 
@@ -131,6 +139,26 @@ export default function OrderDetailsPage() {
 
   const handlePrintReceipt = () => {
     if (!order) return
+    printReceipt(order, Number(cashTendered) || undefined)
+  }
+
+  const handleSplit = async () => {
+    if (!order) return
+    const n = Math.max(2, Math.min(12, Math.floor(ways) || 2))
+    const result = await run("order.split", { orderId: order.id, ways: n })
+    if (result.success) {
+      setSplitPaid(new Array(n).fill(false))
+      toast({ title: "Success", description: `Check split ${n} ways (${(order.total / n).toFixed(2)} each)` })
+    } else {
+      toast({ title: "Error", description: result.error?.message ?? "Split rejected", variant: "destructive" })
+    }
+  }
+
+  const changeDue = cashTendered ? (Number(cashTendered) || 0) - (order?.total ?? 0) : null
+
+  // Thermal-printer receipt via window.print (ESC/POS-friendly HTML).
+  const handlePrintReceiptThermal = () => {
+    if (!order) return
 
     const printWindow = window.open("", "_blank")
     if (printWindow) {
@@ -151,16 +179,9 @@ export default function OrderDetailsPage() {
 
       // Header
       printWindow.document.write('<div class="header">')
-      printWindow.document.write("<h2>Restaurant POS</h2>")
+      printWindow.document.write("<h2>Maison Chili POS</h2>")
       printWindow.document.write(`<p>Order #${order.id.substring(0, 8)}</p>`)
       printWindow.document.write(`<p>${format(new Date(order.createdAt), "PPpp")}</p>`)
-      printWindow.document.write(
-        `<p>${order.diningMode} - ${order.tableId ? `Table ${order.table?.number}` : "Takeaway"}</p>`,
-      )
-      if (order.customerName) {
-        printWindow.document.write(`<p>Customer: ${order.customerName}</p>`)
-      }
-      printWindow.document.write("</div>")
 
       // Items
       printWindow.document.write('<div class="items">')
@@ -215,7 +236,7 @@ export default function OrderDetailsPage() {
       printWindow.document.write("<p>Thank you for your order!</p>")
       printWindow.document.write("</div>")
 
-      printWindow.document.write("</div></body></html>")
+printWindow.document.write("</div></body></html>")
       printWindow.document.close()
       printWindow.print()
     }
@@ -407,6 +428,68 @@ export default function OrderDetailsPage() {
                     </Button>
                   )}
                 </CardFooter>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Split check</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex items-end gap-2">
+                    <div>
+                      <Label htmlFor="split-ways">Split ways</Label>
+                      <Input id="split-ways" type="number" min={2} max={12} value={ways} onChange={(e) => setWays(Number(e.target.value))} className="w-24" />
+                    </div>
+                    <Button size="sm" variant="outline" onClick={() => void handleSplit()}>
+                      Split {Math.max(2, Math.min(12, Math.floor(ways) || 2))} ways
+                    </Button>
+                    {order && (
+                      <span className="text-sm text-muted-foreground">
+                        ${(order.total / Math.max(2, Math.min(12, Math.floor(ways) || 2))).toFixed(2)} each
+                      </span>
+                    )}
+                  </div>
+                  {splitPaid.length > 0 && order && (
+                    <ul className="space-y-1">
+                      {splitPaid.map((paid, i) => (
+                        <li key={i} className="flex items-center justify-between rounded-md border px-2 py-1 text-sm">
+                          <span>Seat {i + 1} — ${(order.total / splitPaid.length).toFixed(2)}</span>
+                          <Button size="sm" variant={paid ? "default" : "outline"} onClick={() => setSplitPaid((p) => p.map((v, j) => (j === i ? !v : v)))}>
+                            {paid ? "Paid" : "Record payment"}
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Change due</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex items-end gap-2">
+                    <div>
+                      <Label htmlFor="cash-tendered">Cash tendered</Label>
+                      <Input id="cash-tendered" type="number" min={0} step={0.01} value={cashTendered} onChange={(e) => setCashTendered(e.target.value)} className="w-32" placeholder={order.total.toFixed(2)} />
+                    </div>
+                    {changeDue !== null && (
+                      <p className="text-sm font-semibold" aria-live="polite">
+                        Change: ${Math.max(0, changeDue).toFixed(2)}
+                        {changeDue < 0 && <span className="ml-2 font-normal text-destructive">(short ${Math.abs(changeDue).toFixed(2)})</span>}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" onClick={handlePrintReceipt}>
+                      <Printer className="mr-2 h-4 w-4" /> Receipt (PDF)
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={handlePrintReceiptThermal} title="Thermal / ESC-POS printers">
+                      <Printer className="mr-2 h-4 w-4" /> Receipt (thermal)
+                    </Button>
+                  </div>
+                </CardContent>
               </Card>
             </TabsContent>
 

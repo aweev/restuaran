@@ -15,6 +15,11 @@ export interface MenuModifierGroupView {
   options: MenuModifierOptionView[]
 }
 
+export interface MenuRecipeLine {
+  inventoryItemId: Id
+  qty: number
+}
+
 export interface MenuState extends AttributeBag {
   name: string
   categoryId: Id
@@ -26,8 +31,16 @@ export interface MenuState extends AttributeBag {
   cost: number
   image: string | null
   allergens: string[]
+  /** One-line pitch shown under the name on the guest menu. */
+  description: string
+  /** Typical kitchen time in minutes. */
+  prepMinutes: number
+  /** Dietary tags: "vegetarian", "vegan", "gluten_free", "spicy". */
+  dietary: string[]
   modifiers: MenuModifierGroupView[]
   priceHistory: Array<{ price: number; at: string; by: string }>
+  /** Stock recipe: inventory depleted per unit fired. Empty = no auto-deplete. */
+  recipe: MenuRecipeLine[]
 }
 
 export interface NewMenuItem {
@@ -37,6 +50,9 @@ export interface NewMenuItem {
   cost?: number
   image?: string
   allergens?: string[]
+  description?: string
+  prepMinutes?: number
+  dietary?: string[]
 }
 
 export class MenuItemAggregate extends Aggregate<MenuState> {
@@ -53,8 +69,12 @@ export class MenuItemAggregate extends Aggregate<MenuState> {
       cost: 0,
       image: null,
       allergens: [],
+      description: "",
+      prepMinutes: 0,
+      dietary: [],
       modifiers: [],
       priceHistory: [],
+      recipe: [],
     })
   }
 
@@ -65,6 +85,9 @@ export class MenuItemAggregate extends Aggregate<MenuState> {
     if (!Number.isFinite(opts.basePrice) || opts.basePrice < 0) {
       throw kernelError("INVALID_MENU_ITEM", "Base price must be a non-negative number")
     }
+    if (opts.prepMinutes != null && (!Number.isFinite(opts.prepMinutes) || opts.prepMinutes < 0)) {
+      throw kernelError("INVALID_MENU_ITEM", "Prep time must be a non-negative number of minutes")
+    }
     agg.raise("menu.itemCreated", {
       name: opts.name,
       categoryId: opts.categoryId,
@@ -72,8 +95,25 @@ export class MenuItemAggregate extends Aggregate<MenuState> {
       cost: opts.cost ?? 0,
       image: opts.image ?? null,
       allergens: opts.allergens ?? [],
+      description: opts.description ?? "",
+      prepMinutes: opts.prepMinutes ?? 0,
+      dietary: opts.dietary ?? [],
     }, opts.actor)
     return agg
+  }
+
+  /** Update the guest-facing content of an item, leaving price/availability alone. */
+  updatePresentation(
+    actor: ActorContext,
+    patch: { description?: string; image?: string | null; prepMinutes?: number; dietary?: string[] },
+  ): void {
+    if (patch.prepMinutes != null && (!Number.isFinite(patch.prepMinutes) || patch.prepMinutes < 0)) {
+      throw kernelError("INVALID_MENU_ITEM", "Prep time must be a non-negative number of minutes")
+    }
+    if (patch.description != null && patch.description.length > 280) {
+      throw kernelError("INVALID_MENU_ITEM", "Description is too long")
+    }
+    this.raise("menu.itemUpdated", patch, actor)
   }
 
   changePrice(actor: ActorContext, price: number): void {
@@ -101,6 +141,23 @@ export class MenuItemAggregate extends Aggregate<MenuState> {
     this.raise("menu.modifierGroupAdded", {
       group: { ...group, groupId: group.groupId ?? crypto.randomUUID() },
     }, actor)
+  }
+
+  /**
+   * Set the stock recipe: inventory lines depleted per unit fired to the
+   * kitchen. Empty array clears the recipe (no auto-deplete).
+   */
+  setRecipe(actor: ActorContext, recipe: MenuRecipeLine[]): void {
+    if (!Array.isArray(recipe)) throw kernelError("INVALID_RECIPE", "Recipe must be an array")
+    for (const line of recipe) {
+      if (!line.inventoryItemId || typeof line.inventoryItemId !== "string") {
+        throw kernelError("INVALID_RECIPE", "Each recipe line needs an inventoryItemId")
+      }
+      if (!Number.isFinite(line.qty) || line.qty <= 0) {
+        throw kernelError("INVALID_RECIPE", "Each recipe line needs a positive qty")
+      }
+    }
+    this.raise("menu.recipeSet", { recipe }, actor)
   }
 
   sellable(): boolean {
@@ -134,9 +191,12 @@ export class MenuItemAggregate extends Aggregate<MenuState> {
       case "menu.availabilityChanged":
       case "menu.eightySixed":
       case "menu.eightySixCleared":
+      case "menu.itemUpdated":
         return { ...s, ...event.payload } as MenuState
       case "menu.modifierGroupAdded":
         return { ...s, modifiers: [...s.modifiers, event.payload.group as MenuModifierGroupView] }
+      case "menu.recipeSet":
+        return { ...s, recipe: (event.payload.recipe as MenuRecipeLine[]) ?? [] }
       default:
         return s
     }

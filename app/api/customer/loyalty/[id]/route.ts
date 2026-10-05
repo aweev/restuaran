@@ -1,29 +1,36 @@
 import { type NextRequest, NextResponse } from "next/server"
-import prisma from "@/lib/prisma"
+import { one, sqlWrite, toNum, toIso } from "@/lib/db-helpers"
 
-export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
 
-    const customer = await prisma.loyaltyCustomer.findUnique({
-      where: { id },
-      include: {
-        activities: {
-          orderBy: {
-            timestamp: "desc",
-          },
-          take: 10,
-        },
-      },
-    })
-
+    const customer = await one(`SELECT * FROM "LoyaltyCustomer" WHERE id = $1`, [id])
     if (!customer) {
       return NextResponse.json({ error: "Customer not found" }, { status: 404 })
     }
 
-    return NextResponse.json(customer)
+    const activities = await sqlWrite(
+      `SELECT id, type, points, description, timestamp
+         FROM "LoyaltyActivity"
+        WHERE "customerId" = $1
+        ORDER BY timestamp DESC
+        LIMIT 10`,
+      [id],
+    )
+
+    return NextResponse.json({
+      ...customer,
+      points: toNum(customer.points),
+      totalSpent: toNum(customer.totalSpent),
+      visitsCount: toNum(customer.visitsCount),
+      joinDate: toIso(customer.joinDate),
+      lastActivity: toIso(customer.lastActivity),
+      activities: activities.map((a) => ({ ...a, points: toNum(a.points), timestamp: toIso(a.timestamp) })),
+    })
   } catch (error) {
-    console.error("Error fetching loyalty customer:", error)
+    console.error("[loyalty] fetch failed:", error)
     return NextResponse.json({ error: "Failed to fetch customer data" }, { status: 500 })
   }
 }
+

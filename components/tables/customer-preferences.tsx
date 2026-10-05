@@ -49,6 +49,14 @@ export function CustomerPreferences() {
       })
       return
     }
+    if (!newCustomer.email?.trim()) {
+      toast({
+        title: "Email required",
+        description: "Email is the loyalty identity — it is required to enrol a member.",
+        variant: "destructive",
+      })
+      return
+    }
 
     try {
       await addCustomer({
@@ -79,7 +87,7 @@ export function CustomerPreferences() {
       console.error("Error adding customer:", error)
       toast({
         title: "Error",
-        description: "Failed to add customer.",
+        description: error instanceof Error ? error.message : "Failed to add customer.",
         variant: "destructive",
       })
     }
@@ -101,7 +109,7 @@ export function CustomerPreferences() {
       console.error("Error updating customer:", error)
       toast({
         title: "Error",
-        description: "Failed to update customer information.",
+        description: error instanceof Error ? error.message : "Failed to update customer information.",
         variant: "destructive",
       })
     }
@@ -169,11 +177,12 @@ export function CustomerPreferences() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="email">Email Address</Label>
+                    <Label htmlFor="email">Email Address (required — loyalty identity)</Label>
                     <Input
                       id="email"
                       name="email"
                       type="email"
+                      required
                       value={newCustomer.email}
                       onChange={(e) => handleInputChange(e)}
                     />
@@ -282,7 +291,7 @@ export function CustomerPreferences() {
                         {customer.visitCount} visits
                       </Badge>
                       <Badge variant="outline" className="bg-green-50 text-green-800">
-                        ${(customer.totalSpent / 100).toFixed(2)} spent
+                        ${customer.totalSpent.toFixed(2)} spent
                       </Badge>
                       {customer.lastVisit && (
                         <Badge variant="outline" className="bg-purple-50 text-purple-800">

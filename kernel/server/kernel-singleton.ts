@@ -1,5 +1,7 @@
 import { Kernel, bootKernel, createKernel } from "@/kernel"
 import { tenantFromEnv } from "@/kernel/tenant/tenant"
+import { PostgresIdempotencyStore } from "@/kernel/commands/command-bus"
+import { sql } from "@/lib/db"
 
 /**
  * Single kernel per serverless warm instance (in dev this holds the in-memory
@@ -21,7 +23,14 @@ export function getKernel(): Promise<Kernel> {
     const tenant = tenantFromEnv() ?? { orgId: "default-org", venueId: "default-venue" }
     const socketEnabled = Boolean(process.env.INTERNAL_EMIT_SECRET)
     globalForKernel.__rosSocketEnabled = socketEnabled
-    const kernel = createKernel({ tenant })
+    
+    // Use DB-backed idempotency store in production
+    const isProduction = process.env.NODE_ENV === "production" || process.env.ROS_USE_PG === "1"
+    const idempotency = isProduction && process.env.DATABASE_URL
+      ? new PostgresIdempotencyStore(sql as never)
+      : undefined
+
+    const kernel = createKernel({ tenant, idempotency })
     // bootKernel: installs Phase 2 + Phase 3 modules, wires the socket bridge
     // when INTERNAL_EMIT_SECRET is set, drains outbound deliveries automatically
     // (webhooks/connectors), optionally schedules compaction, boots projections.

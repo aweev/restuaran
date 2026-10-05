@@ -42,7 +42,7 @@ export class AggregateRepository {
     return this.deps.load<T>(this.deps.events, type, tenant, id)
   }
 
-  /** Load without the existence guard â€” for cross-module checks on possibly-absent ids. */
+  /** Load without the existence guard — for cross-module checks on possibly-absent ids. */
   read<T extends Aggregate>(type: string, tenant: TenantContext, id: string): Promise<T> {
     return this.deps.read<T>(this.deps.events, type, tenant, id)
   }

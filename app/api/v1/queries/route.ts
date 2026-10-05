@@ -1,6 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { apiKeyFromHeaders, checkApiKey } from "@/kernel/server/api-key"
 import { getKernel } from "@/kernel/server/kernel-singleton"
+import { assertProjectionAccess } from "@/kernel/projections/projection-acl"
+import { rateLimit, getClientIp } from "@/lib/rate-limiter"
 
 export const runtime = "nodejs"
 
@@ -23,11 +25,32 @@ export async function GET(req: NextRequest) {
     )
   }
 
+  const limited = await rateLimit(`v1:${auth.role}:${getClientIp(req)}`, {
+    maxAttempts: 180,
+    windowMs: 60 * 1000,
+    keyPrefix: "v1:queries:",
+  })
+  if (limited.blocked) {
+    return NextResponse.json(
+      { success: false, error: { code: "RATE_LIMITED", message: "Too many requests" } },
+      { status: 429 },
+    )
+  }
+
   const { searchParams } = new URL(req.url)
   const kernel = await getKernel()
 
   const projectionName = searchParams.get("projection")
   if (projectionName) {
+    try {
+      assertProjectionAccess(auth.actor.permissions, projectionName)
+    } catch (err) {
+      const e = err as { code?: string; message?: string }
+      return NextResponse.json(
+        { success: false, error: { code: e.code ?? "FORBIDDEN", message: e.message ?? "Forbidden" } },
+        { status: 403 }
+      )
+    }
     try {
       const p = kernel.projections.get(projectionName)
       return NextResponse.json({ name: projectionName, position: p.position, state: p.state })

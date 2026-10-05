@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { toast } from "@/components/ui/use-toast"
 import { Loader2, Trash2 } from "lucide-react"
 import type { Order, CartItem } from "@/types"
+import { getVenueSettings } from "@/lib/settings"
 
 interface OrderEditFormProps {
   order: Order
@@ -84,9 +85,9 @@ export function OrderEditForm({ order, onCancel }: OrderEditFormProps) {
     )
   }
 
-  // Calculate totals
+  // Totals use the venue-configured tax rate (kernel-canonical).
   const subtotal = items.reduce((sum, item) => sum + item.totalPrice, 0)
-  const taxRate = 0.05 // 5% tax rate
+  const taxRate = getVenueSettings().taxRate
   const tax = subtotal * taxRate
   const total = subtotal + tax - (order.discount || 0)
 

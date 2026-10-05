@@ -4,10 +4,21 @@ import { defineCommand } from "@/kernel/commands/define-command"
 import { QueryHandler } from "@/kernel/queries/query-bus"
 import { MenuItemAggregate, MenuModifierGroupView } from "@/kernel/aggregates/menu.aggregate"
 import { RosModule, ModuleRuntime } from "@/kernel/modules/module-registry"
-import { defineProjection, Projection } from "@/kernel/projections/projection"
+import { defineProjection, Projection, maybePaginate } from "@/kernel/projections/projection"
 import { CommandPolicy } from "@/kernel/commands/command-bus"
 import { Command } from "@/kernel/types"
 
+/**
+ * The menu read model.
+ *
+ * `MenuBoardRow` was originally the minimum a back-of-house screen needs: id,
+ * price, availability. That is not enough to render anything a guest actually
+ * looks at, so the customer menu had to reach back into the mutable `MenuItem`
+ * table for names and descriptions — reintroducing exactly the split-brain this
+ * architecture exists to remove. Everything a menu surface needs is projected
+ * here, including the fields that only change rarely (image, prep time,
+ * dietary tags), so the guest menu is served from the event store alone.
+ */
 export interface MenuBoardRow {
   id: string
   name: string
@@ -18,6 +29,20 @@ export interface MenuBoardRow {
   available: boolean
   eightySixed: boolean
   allergens: string[]
+  /** One-line pitch shown under the name on the guest menu. */
+  description: string
+  /** Image URL; null falls back to the placeholder in the UI. */
+  image: string | null
+  /** Typical kitchen time in minutes, used for the "ready in" estimate. */
+  prepMinutes: number
+  /** Dietary tags: "vegetarian", "vegan", "gluten_free", "spicy". */
+  dietary: string[]
+  /** Modifiers offered on this item, for the guest-facing option picker. */
+  modifierGroups: Array<{ groupId: string; name: string; required: boolean; max: number }>
+  /** Stock recipe for auto-depletion; empty when not wired. */
+  recipe: Array<{ inventoryItemId: string; qty: number }>
+  /** Last change, so the guest menu can serve a fresh cache. */
+  updatedAt: string
 }
 
 export interface MenuBoardState extends AttributeBag {
@@ -39,6 +64,8 @@ export function menuBoardProjection(
         "menu.eightySixed",
         "menu.eightySixCleared",
         "menu.modifierGroupAdded",
+        "menu.itemUpdated",
+        "menu.recipeSet",
       ],
       reduce: (state, event: StoredEvent): MenuBoardState => {
         const items = [...state.items]
@@ -47,7 +74,11 @@ export function menuBoardProjection(
         const base: MenuBoardRow =
           idx >= 0
             ? items[idx]
-            : { id: event.aggregateId, name: "", categoryId: "", price: 0, cost: 0, margin: 0, available: true, eightySixed: false, allergens: [] }
+            : {
+                id: event.aggregateId, name: "", categoryId: "", price: 0, cost: 0, margin: 0,
+                available: true, eightySixed: false, allergens: [], description: "", image: null,
+                prepMinutes: 0, dietary: [], modifierGroups: [], recipe: [], updatedAt: event.occurredAt,
+              }
         const next: MenuBoardRow = { ...base }
         switch (event.eventType) {
           case "menu.itemCreated":
@@ -56,6 +87,10 @@ export function menuBoardProjection(
             next.price = Number(p.basePrice ?? 0)
             next.cost = Number(p.cost ?? 0)
             next.allergens = (p.allergens as string[]) ?? []
+            next.description = String(p.description ?? "")
+            next.image = p.image ? String(p.image) : null
+            next.prepMinutes = Number(p.prepMinutes ?? 0)
+            next.dietary = (p.dietary as string[]) ?? []
             break
           case "menu.priceChanged":
             next.price = Number(p.basePrice ?? next.price)
@@ -71,8 +106,29 @@ export function menuBoardProjection(
             next.eightySixed = false
             next.available = true
             break
+          case "menu.modifierGroupAdded":
+            // Append, matching the aggregate. Re-adding the same groupId replaces
+            // it rather than duplicating, so a replayed stream cannot produce a
+            // doubled option picker.
+            next.modifierGroups = [
+              ...next.modifierGroups.filter((g) => g.groupId !== (p.group as { groupId?: string })?.groupId),
+              p.group as MenuBoardRow["modifierGroups"][number],
+            ]
+            break
+          case "menu.itemUpdated":
+            next.description = p.description != null ? String(p.description) : next.description
+            next.image = p.image !== undefined ? (p.image ? String(p.image) : null) : next.image
+            next.prepMinutes = p.prepMinutes != null ? Number(p.prepMinutes) : next.prepMinutes
+            next.dietary = (p.dietary as string[]) ?? next.dietary
+            break
+          case "menu.recipeSet":
+            next.recipe = Array.isArray(p.recipe)
+              ? (p.recipe as Array<{ inventoryItemId: string; qty: number }>)
+              : next.recipe
+            break
         }
         next.margin = next.price - next.cost
+        next.updatedAt = event.occurredAt
         if (idx >= 0) items[idx] = next
         else items.push(next)
         return { items }
@@ -97,7 +153,46 @@ const createItem = defineCommand({
       cost: ctx.payload.cost ? Number(ctx.payload.cost) : undefined,
       image: ctx.payload.image ? String(ctx.payload.image) : undefined,
       allergens: ctx.payload.allergens as string[] | undefined,
+      description: ctx.payload.description ? String(ctx.payload.description) : undefined,
+      prepMinutes: ctx.payload.prepMinutes != null ? Number(ctx.payload.prepMinutes) : undefined,
+      dietary: ctx.payload.dietary as string[] | undefined,
     })
+    await ctx.commit(agg)
+    return id
+  },
+})
+
+/** Edit the guest-facing content of an item without touching price or availability. */
+const updateItem = defineCommand({
+  commandType: "menu.updateItem",
+  requiredPermission: "menu:manage",
+  async execute(ctx) {
+    const id = String(ctx.payload.itemId)
+    const agg = await ctx.load<MenuItemAggregate>(MenuItemAggregate.TYPE, id)
+    agg.updatePresentation(ctx.actor, {
+      description: ctx.payload.description != null ? String(ctx.payload.description) : undefined,
+      image: ctx.payload.image !== undefined ? (ctx.payload.image ? String(ctx.payload.image) : null) : undefined,
+      prepMinutes: ctx.payload.prepMinutes != null ? Number(ctx.payload.prepMinutes) : undefined,
+      dietary: ctx.payload.dietary as string[] | undefined,
+    })
+    await ctx.commit(agg)
+    return id
+  },
+})
+
+/**
+ * Kitchen-editable prep time (the promise the KDS escalates against). Gated on
+ * `order:process` — the capability the kitchen already holds — rather than
+ * `menu:manage`, so the line can set its own ticket target without gaining the
+ * ability to reprice or 86 the menu.
+ */
+const setPrepTime = defineCommand({
+  commandType: "menu.setPrepTime",
+  requiredPermission: "order:process",
+  async execute(ctx) {
+    const id = String(ctx.payload.itemId)
+    const agg = await ctx.load<MenuItemAggregate>(MenuItemAggregate.TYPE, id)
+    agg.updatePresentation(ctx.actor, { prepMinutes: Number(ctx.payload.prepMinutes) })
     await ctx.commit(agg)
     return id
   },
@@ -164,6 +259,22 @@ const addModifierGroup = defineCommand({
 })
 
 /**
+ * Stock recipe for auto-depletion: inventory consumed per unit fired.
+ * Gated on `inventory:edit` so only stock managers wire recipes.
+ */
+const setRecipe = defineCommand({
+  commandType: "menu.setRecipe",
+  requiredPermission: "inventory:edit",
+  async execute(ctx) {
+    const id = String(ctx.payload.itemId)
+    const agg = await ctx.load<MenuItemAggregate>(MenuItemAggregate.TYPE, id)
+    agg.setRecipe(ctx.actor, (ctx.payload.recipe as Array<{ inventoryItemId: string; qty: number }>) ?? [])
+    await ctx.commit(agg)
+    return id
+  },
+})
+
+/**
  * Cross-module policy: an order line cannot reference an item that is 86'd.
  * This is the flagship example of a module enforcing a rule on *another* module's
  * command — impossible in a monolithic POS where order logic and menu logic are
@@ -203,16 +314,16 @@ const getItem: QueryHandler = {
 const listMenu: QueryHandler = {
   queryType: "list.menu",
   requiredPermission: "menu:view",
-  async handle(_params, ctx) {
-    return ctx.projections.get<MenuBoardState>("menu.board").state.items
+  async handle(params, ctx) {
+    return maybePaginate(ctx.projections.get<MenuBoardState>("menu.board").state.items, params)
   },
 }
 
 const listSellable: QueryHandler = {
   queryType: "list.menu.sellable",
   requiredPermission: "menu:view",
-  async handle(_params, ctx) {
-    return ctx.projections.get<MenuBoardState>("menu.board").state.items.filter((i) => i.available && !i.eightySixed)
+  async handle(params, ctx) {
+    return maybePaginate(ctx.projections.get<MenuBoardState>("menu.board").state.items.filter((i) => i.available && !i.eightySixed), params)
   },
 }
 
@@ -224,12 +335,14 @@ export function menuModule(): RosModule {
     capabilities: {
       commands: [
         "menu.createItem", "menu.changePrice", "menu.setAvailability",
-        "menu.eightySix", "menu.clearEightySix", "menu.addModifierGroup",
+        "menu.eightySix", "menu.clearEightySix", "menu.addModifierGroup", "menu.updateItem",
+        "menu.setPrepTime", "menu.setRecipe",
       ],
       queries: ["get.menuItem", "list.menu", "list.menu.sellable"],
       eventTypes: [
         "menu.itemCreated", "menu.priceChanged", "menu.availabilityChanged",
-        "menu.eightySixed", "menu.eightySixCleared", "menu.modifierGroupAdded",
+        "menu.eightySixed", "menu.eightySixCleared", "menu.modifierGroupAdded", "menu.itemUpdated",
+        "menu.recipeSet",
       ],
     },
     lifecycle: {
@@ -243,6 +356,9 @@ export function menuModule(): RosModule {
         runtime.commands.register(eightySix)
         runtime.commands.register(clearEightySix)
         runtime.commands.register(addModifierGroup)
+        runtime.commands.register(updateItem)
+        runtime.commands.register(setPrepTime)
+        runtime.commands.register(setRecipe)
         runtime.commands.use(noSoldItems86dPolicy)
         runtime.queries.register(getItem)
         runtime.queries.register(listMenu)
