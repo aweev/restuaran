@@ -5,6 +5,7 @@ import { useCommand, useProjection } from "@/kernel/react/kernel-provider"
 import type { KitchenQueueState, KitchenTicket } from "@/kernel/projections/builtins"
 import { useProjection as useBoardProjection } from "@/kernel/react/kernel-provider"
 import type { OrderBoardState } from "@/kernel/projections/orders-board"
+import type { MenuBoardState } from "@/kernel/modules/menu.module"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -17,6 +18,8 @@ import { KitchenSocketIntegration } from "@/components/kitchen/kitchen-socket-in
 import { KitchenNotificationSettings } from "@/components/kitchen/kitchen-notification-settings"
 import { KitchenStaffAssignment } from "@/components/kitchen/kitchen-staff-assignment"
 import { KernelStatusIndicator } from "@/components/layout/KernelStatusIndicator"
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useKitchen } from "@/context/KitchenContext"
 import { useFeedback } from "@/lib/feedback"
 import { getVenueSettings } from "@/lib/settings"
@@ -33,13 +36,17 @@ function allergensIn(text: string | undefined | null): string[] {
 export default function KitchenDisplayPage() {
   const { state: queue } = useProjection<KitchenQueueState>("kitchen.queue", 2000)
   const { state: board } = useBoardProjection<OrderBoardState>("orders.board", 5000)
+  const { state: menu } = useBoardProjection<MenuBoardState>("menu.board", 10000)
   const { run } = useCommand()
   const { notify } = useFeedback()
   const { state: kitchenState, toggleSound } = useKitchen()
   const [refreshing, setRefreshing] = useState(false)
+  const [refreshNonce, setRefreshNonce] = useState(0)
   const [station, setStation] = useState("all")
   const [course, setCourse] = useState("1")
   const [eightySixTarget, setEightySixTarget] = useState("")
+  const [eightySixOpen, setEightySixOpen] = useState(false)
+  const [last86, setLast86] = useState<{ itemId: string; name: string } | null>(null)
 
   const slaMinutes = getVenueSettings().slaMinutes
 
@@ -126,19 +133,34 @@ export default function KitchenDisplayPage() {
     else notify("error", `Course ${action} failed`, res.error?.message)
   }
 
+  const eightySixName = (menu?.items ?? []).find((i) => i.id === eightySixTarget)?.name ?? eightySixTarget
+
   const eightySix = async () => {
     if (!eightySixTarget.trim()) return
     const res = await run("menu.eightySix", { itemId: eightySixTarget.trim(), reason: "86'd from KDS" })
     if (res.success) {
-      notify("success", "Item 86'd")
+      setLast86({ itemId: eightySixTarget.trim(), name: eightySixName })
+      notify("success", `86'd ${eightySixName}`)
       setEightySixTarget("")
+      setEightySixOpen(false)
     } else notify("error", "86 failed", res.error?.message)
   }
 
+  const undo86 = async () => {
+    if (!last86) return
+    const res = await run("menu.clearEightySix", { itemId: last86.itemId })
+    if (res.success) {
+      notify("success", `${last86.name} back on`)
+      setLast86(null)
+    } else notify("error", "Could not restore item", res.error?.message)
+  }
+
   const handleRefresh = async () => {
+    // Honest refresh: projections poll (kitchen.queue every 2s). This re-mounts
+    // the ticket grid so a stuck render recovers; it never pretends to refetch.
     setRefreshing(true)
-    // Projection polls every 2s; manual refresh just yields a beat for the spinner.
-    await new Promise((r) => setTimeout(r, 400))
+    setRefreshNonce((n) => n + 1)
+    await new Promise((r) => setTimeout(r, 300))
     setRefreshing(false)
   }
 
@@ -174,35 +196,53 @@ export default function KitchenDisplayPage() {
 
       <Card>
         <CardContent className="flex flex-wrap items-center gap-2 p-3">
-          <div className="flex items-center gap-1" role="group" aria-label="Station filter">
-            <span className="text-xs text-muted-foreground">Station:</span>
-            {stations.slice(0, 8).map((s) => (
-              <Button key={s} size="sm" variant={station === s ? "default" : "outline"} onClick={() => setStation(s)}>
+          <div className="flex max-w-full items-center gap-1 overflow-x-auto" role="group" aria-label="Station filter">
+            <span className="shrink-0 text-xs text-muted-foreground">Station:</span>
+            {stations.map((s) => (
+              <Button key={s} size="lg" className="min-h-[44px] shrink-0" variant={station === s ? "default" : "outline"} onClick={() => setStation(s)}>
                 {s}
               </Button>
             ))}
           </div>
           <div className="flex items-center gap-1">
             <span className="text-xs text-muted-foreground">Course:</span>
-            <Input value={course} onChange={(e) => setCourse(e.target.value)} className="h-8 w-14" aria-label="Course number" />
+            <Input value={course} onChange={(e) => setCourse(e.target.value)} className="h-11 w-16" aria-label="Course number" />
           </div>
           <div className="flex items-center gap-1">
-            <Input
-              value={eightySixTarget}
-              onChange={(e) => setEightySixTarget(e.target.value)}
-              placeholder="Item id to 86…"
-              className="h-8 w-40"
-              aria-label="Item id to 86"
-            />
-            <Button size="sm" variant="destructive" onClick={() => void eightySix()} disabled={!eightySixTarget.trim()}>
-              <Flame className="mr-1 h-3 w-3" /> 86
+            <Select value={eightySixTarget} onValueChange={setEightySixTarget}>
+              <SelectTrigger className="h-11 w-48" aria-label="Menu item to 86"><SelectValue placeholder="Pick item to 86…" /></SelectTrigger>
+              <SelectContent>
+                {(menu?.items ?? []).filter((i) => !i.eightySixed).map((i) => (
+                  <SelectItem key={i.id} value={i.id}>{i.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button size="lg" className="min-h-[44px]" variant="destructive" disabled={!eightySixTarget.trim()} onClick={() => setEightySixOpen(true)}>
+              <Flame className="mr-1 h-4 w-4" /> 86…
             </Button>
+            {last86 && (
+              <Button size="lg" className="min-h-[44px]" variant="outline" onClick={() => void undo86()}>
+                Undo 86 ({last86.name})
+              </Button>
+            )}
           </div>
-          <span className="ml-auto text-[11px] text-muted-foreground">Keys 1–9 bump tickets · SLA {slaMinutes} min (Settings)</span>
+          <AlertDialog open={eightySixOpen} onOpenChange={setEightySixOpen}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>86 {eightySixName}?</AlertDialogTitle>
+                <AlertDialogDescription>Servers stop seeing it immediately. Use Undo within this shift if the kitchen recovers stock.</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Keep selling</AlertDialogCancel>
+                <AlertDialogAction onClick={(e) => { e.preventDefault(); void eightySix() }}>86 it</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+          <span className="ml-auto text-[11px] text-muted-foreground">Live · tickets poll every 2s · Keys 1–9 bump · SLA {slaMinutes} min (Settings)</span>
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3" role="log" aria-label="Kitchen ticket queue">
+      <div key={refreshNonce} className="grid grid-cols-1 gap-4 md:grid-cols-3" role="log" aria-label="Kitchen ticket queue">
         {(["queued", "in_progress", "ready"] as const).map((col) => {
           const colTickets = visible.filter((t) => t.status === col)
           return (
@@ -244,13 +284,13 @@ export default function KitchenDisplayPage() {
                             </div>
                           )
                         })}
-                        <div className="flex flex-wrap gap-1 pt-1">
-                          <Button size="sm" onClick={() => void bump(t)} title={`Bump (key ${i + 1})`}>
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          <Button size="lg" className="min-h-[48px]" onClick={() => void bump(t)} title={`Bump (key ${i + 1})`}>
                             Bump [{i + 1}]
                           </Button>
-                          <Button size="sm" variant="outline" onClick={() => void fireCourse(t.orderId, "fire")}>Fire c{course}</Button>
-                          <Button size="sm" variant="outline" onClick={() => void fireCourse(t.orderId, "hold")}>Hold</Button>
-                          <Button size="sm" variant="outline" onClick={() => void fireCourse(t.orderId, "release")}>Release</Button>
+                          <Button size="lg" className="min-h-[48px]" variant="outline" onClick={() => void fireCourse(t.orderId, "fire")}>Fire c{course}</Button>
+                          <Button size="lg" className="min-h-[48px]" variant="outline" onClick={() => void fireCourse(t.orderId, "hold")}>Hold</Button>
+                          <Button size="lg" className="min-h-[48px]" variant="outline" onClick={() => void fireCourse(t.orderId, "release")}>Release</Button>
                         </div>
                       </CardContent>
                     </Card>

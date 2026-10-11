@@ -3,8 +3,10 @@ import { AttributeBag, kernelError, StoredEvent } from "@/kernel/types"
 import { defineCommand } from "@/kernel/commands/define-command"
 import { QueryHandler } from "@/kernel/queries/query-bus"
 import { ReservationAggregate, ReservationState } from "@/kernel/aggregates/reservation.aggregate"
+import { TableAggregate } from "@/kernel/aggregates/table.aggregate"
 import { RosModule, ModuleRuntime } from "@/kernel/modules/module-registry"
 import { defineProjection, Projection, maybePaginate } from "@/kernel/projections/projection"
+import { TableBoardState } from "@/kernel/projections/builtins"
 
 export interface ReservationBoardRow {
   id: string
@@ -20,6 +22,10 @@ export interface ReservationBoardRow {
   phone: string | null
   email: string | null
   specialRequests: string | null
+  /** Duration of the reservation in minutes, used for double-booking checks. */
+  durationMinutes: number
+  /** Order ID linked to this reservation when seated, for table coordination. */
+  currentOrderId: string | null
 }
 
 export interface ReservationBoardState extends AttributeBag {
@@ -51,7 +57,7 @@ export function reservationBoardProjection(
         const base: ReservationBoardRow =
           idx >= 0
             ? rows[idx]
-            : { id: event.aggregateId, customerName: "", partySize: 0, date: "", time: "", status: "pending", tableId: null, source: "pos", phone: null, email: null, specialRequests: null }
+            : { id: event.aggregateId, customerName: "", partySize: 0, date: "", time: "", status: "pending", tableId: null, source: "pos", phone: null, email: null, specialRequests: null, durationMinutes: 90, currentOrderId: null }
         const next: ReservationBoardRow = { ...base }
         if (event.eventType === "reservation.booked") {
           next.customerName = String(p.customerName ?? "")
@@ -63,6 +69,7 @@ export function reservationBoardProjection(
           next.phone = (p.phone as string) ?? null
           next.email = (p.email as string) ?? null
           next.specialRequests = (p.specialRequests as string) ?? null
+          next.durationMinutes = Number(p.durationMinutes ?? 90)
         }
         if (event.eventType === "reservation.detailsUpdated") {
           if (p.partySize !== undefined) next.partySize = Number(p.partySize)
@@ -74,6 +81,7 @@ export function reservationBoardProjection(
         if (p.tableId !== undefined) next.tableId = (p.tableId as string) ?? null
         if (p.date) next.date = String(p.date)
         if (p.time) next.time = String(p.time)
+        if (p.durationMinutes !== undefined) next.durationMinutes = Number(p.durationMinutes)
         if (idx >= 0) rows[idx] = next
         else rows.push(next)
         rows.sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`))
@@ -125,7 +133,7 @@ const book = defineCommand({
           r.tableId === tableId &&
           r.date === payload.date &&
           ["pending", "confirmed", "seated"].includes(r.status) &&
-          overlaps(String(payload.time), Number(payload.durationMinutes ?? 90), r.time, 90)
+          overlaps(String(payload.time), Number(payload.durationMinutes ?? 90), r.time, r.durationMinutes ?? 90)
       )
       if (conflict) {
         throw kernelError("TABLE_DOUBLE_BOOKED", `Table already reserved at ${conflict.time} by ${conflict.customerName}`)
@@ -155,8 +163,23 @@ const confirm = defineCommand({
   requiredPermission: "reservation:manage",
   async execute(ctx) {
     const id = String(ctx.payload.reservationId)
+    const tableId = ctx.payload.tableId ? String(ctx.payload.tableId) : undefined
     const agg = await ctx.load<ReservationAggregate>(ReservationAggregate.TYPE, id)
-    agg.confirm(ctx.actor, ctx.payload.tableId ? String(ctx.payload.tableId) : undefined)
+    const board = ctx.projections.get<ReservationBoardState>("reservations.board").state
+    if (tableId) {
+      const conflict = board.rows.find(
+        (r) =>
+          r.id !== id &&
+          r.tableId === tableId &&
+          r.date === agg.state.date &&
+          ["pending", "confirmed", "seated"].includes(r.status) &&
+          overlaps(agg.state.time, agg.state.durationMinutes ?? 90, r.time, r.durationMinutes ?? 90)
+      )
+      if (conflict) {
+        throw kernelError("TABLE_DOUBLE_BOOKED", `Table already reserved at ${conflict.time} by ${conflict.customerName}`)
+      }
+    }
+    agg.confirm(ctx.actor, tableId)
     await ctx.commit(agg)
     return id
   },
@@ -168,7 +191,20 @@ const seat = defineCommand({
   async execute(ctx) {
     const id = String(ctx.payload.reservationId)
     const agg = await ctx.load<ReservationAggregate>(ReservationAggregate.TYPE, id)
-    agg.seat(ctx.actor, String(ctx.payload.tableId))
+    const tableId = String(ctx.payload.tableId)
+    const serverId: string = String(ctx.payload.serverId ?? ctx.actor.userId)
+    agg.seat(ctx.actor, tableId)
+    // Also seat the table if it's available
+    const tableBoard = ctx.projections.get<TableBoardState>("tables.board").state
+    const tableRow = tableBoard.rows.find((t) => t.tableId === tableId)
+    if (tableRow && tableRow.status === "available") {
+      const tableAgg = await ctx.load<TableAggregate>(TableAggregate.TYPE, tableId)
+      // Use the reservation's currentOrderId or generate one
+      const rawOrderId = (agg.state as { currentOrderId?: unknown }).currentOrderId
+      const orderId = typeof rawOrderId === "string" && rawOrderId ? rawOrderId : randomUUID()
+      tableAgg.seat(ctx.actor, orderId, serverId)
+      await ctx.commit(tableAgg)
+    }
     await ctx.commit(agg)
     return id
   },
@@ -216,7 +252,23 @@ const reschedule = defineCommand({
   async execute(ctx) {
     const id = String(ctx.payload.reservationId)
     const agg = await ctx.load<ReservationAggregate>(ReservationAggregate.TYPE, id)
-    agg.reschedule(ctx.actor, String(ctx.payload.date), String(ctx.payload.time))
+    const newDate = String(ctx.payload.date)
+    const newTime = String(ctx.payload.time)
+    const board = ctx.projections.get<ReservationBoardState>("reservations.board").state
+    if (agg.state.tableId) {
+      const conflict = board.rows.find(
+        (r) =>
+          r.id !== id &&
+          r.tableId === agg.state.tableId &&
+          r.date === newDate &&
+          ["pending", "confirmed", "seated"].includes(r.status) &&
+          overlaps(newTime, agg.state.durationMinutes ?? 90, r.time, r.durationMinutes ?? 90)
+      )
+      if (conflict) {
+        throw kernelError("TABLE_DOUBLE_BOOKED", `Table already reserved at ${conflict.time} by ${conflict.customerName}`)
+      }
+    }
+    agg.reschedule(ctx.actor, newDate, newTime)
     await ctx.commit(agg)
     return id
   },

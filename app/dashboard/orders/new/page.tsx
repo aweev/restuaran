@@ -17,10 +17,12 @@ import type { MenuItem, MenuCategory } from "@/types"
 export default function NewOrderPage() {
   const router = useRouter()
   const { state: menuState, fetchMenuItems } = useMenu()
-  const { state: cartState } = useCart()
+  const { state: cartState, addItem } = useCart()
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedCategory, setSelectedCategory] = useState<MenuCategory>("all")
+  const [addingId, setAddingId] = useState<string | null>(null)
 
   useEffect(() => {
     const loadData = async () => {
@@ -28,6 +30,7 @@ export default function NewOrderPage() {
         await fetchMenuItems()
       } catch (error) {
         console.error("Error loading menu data:", error)
+        setLoadError(error instanceof Error ? error.message : "Could not load menu")
       } finally {
         setLoading(false)
       }
@@ -37,6 +40,10 @@ export default function NewOrderPage() {
   }, [fetchMenuItems])
 
   const filteredItems = menuState.items.filter((item) => {
+    // Never offer 86'd / unavailable items as orderable — kernel would reject on addLine.
+    if (item.available === false) {
+      return false
+    }
     // Filter by category
     if (selectedCategory !== "all" && item.category !== selectedCategory) {
       return false
@@ -51,14 +58,38 @@ export default function NewOrderPage() {
     return true
   })
 
-  const handleItemClick = (_item: MenuItem) => {
-    // This would open the item customization modal
+  const handleItemClick = async (item: MenuItem) => {
+    // Quick-add: single tap rings the item (modifiers handled in cart edit).
+    // Previously a no-op — taps went nowhere.
+    if (addingId) return
+    setAddingId(item.id)
+    try {
+      await addItem(item, 1, [])
+    } catch {
+      // CartContext already surfaces rejection with recovery actions; swallow here
+      // to avoid double-toasting.
+    } finally {
+      setAddingId(null)
+    }
   }
 
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      <div className="flex h-full items-center justify-center" role="status" aria-label="Loading menu">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" aria-hidden="true" />
+        <span className="sr-only">Loading menu…</span>
+      </div>
+    )
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-8" role="alert">
+        <p className="font-medium">Could not load the menu</p>
+        <p className="text-sm text-muted-foreground">{loadError}</p>
+        <Button onClick={() => { setLoading(true); setLoadError(null); fetchMenuItems().catch((e) => setLoadError(e instanceof Error ? e.message : "Could not load menu")).finally(() => setLoading(false)) }}>
+          Try again
+        </Button>
       </div>
     )
   }
@@ -115,8 +146,13 @@ export default function NewOrderPage() {
               </div>
             ) : (
               <Card>
-                <CardContent className="flex h-40 items-center justify-center">
-                  <p className="text-muted-foreground">No menu items found</p>
+                <CardContent className="flex h-40 flex-col items-center justify-center gap-2">
+                  <p className="text-muted-foreground">{searchQuery || selectedCategory !== "all" ? "No items match these filters" : "No sellable items right now — check the menu board"}</p>
+                  {(searchQuery || selectedCategory !== "all") && (
+                    <Button variant="outline" size="sm" onClick={() => { setSearchQuery(""); setSelectedCategory("all") }}>
+                      Clear filters
+                    </Button>
+                  )}
                 </CardContent>
               </Card>
             )}
@@ -137,8 +173,8 @@ export default function NewOrderPage() {
                         <p className="line-clamp-1 text-sm text-muted-foreground">{item.description}</p>
                         <div className="mt-1 flex items-center justify-between">
                           <span className="font-medium">${item.price.toFixed(2)}</span>
-                          <Button size="sm" onClick={() => handleItemClick(item)}>
-                            Add to Order
+                          <Button size="lg" className="min-h-[44px]" disabled={addingId === item.id} onClick={() => handleItemClick(item)}>
+                            {addingId === item.id ? "Adding…" : "Add to Order"}
                           </Button>
                         </div>
                       </div>
@@ -148,8 +184,13 @@ export default function NewOrderPage() {
               </div>
             ) : (
               <Card>
-                <CardContent className="flex h-40 items-center justify-center">
-                  <p className="text-muted-foreground">No menu items found</p>
+                <CardContent className="flex h-40 flex-col items-center justify-center gap-2">
+                  <p className="text-muted-foreground">{searchQuery || selectedCategory !== "all" ? "No items match these filters" : "No sellable items right now — check the menu board"}</p>
+                  {(searchQuery || selectedCategory !== "all") && (
+                    <Button variant="outline" size="sm" onClick={() => { setSearchQuery(""); setSelectedCategory("all") }}>
+                      Clear filters
+                    </Button>
+                  )}
                 </CardContent>
               </Card>
             )}

@@ -2,8 +2,9 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useOrder } from "@/context/OrderContext"
+import { useKernel } from "@/kernel/react/kernel-provider"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -20,12 +21,27 @@ interface PaymentFormProps {
 
 export function PaymentForm({ orderId, totalDue, totalPaid }: PaymentFormProps) {
   const { addPayment } = useOrder()
+  const { ask } = useKernel()
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash")
   const [amount, setAmount] = useState<number>(totalDue - totalPaid)
   const [reference, setReference] = useState("")
   const [paymentMethodId, setPaymentMethodId] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isSplitPayment, setIsSplitPayment] = useState(false)
+  const [providerHint, setProviderHint] = useState<string | null>(null)
+
+  // Honest card banner: never imply real processing when manual/simulated.
+  useEffect(() => {
+    let alive = true
+    void ask<{ provider: string; liveCards: boolean; hint: string }>("get.paymentProvider", {})
+      .then((r) => {
+        if (alive && r.success) setProviderHint((r.data as { hint: string }).hint)
+      })
+      .catch(() => null)
+    return () => {
+      alive = false
+    }
+  }, [ask])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -86,8 +102,25 @@ export function PaymentForm({ orderId, totalDue, totalPaid }: PaymentFormProps) 
   const remainingBalance = totalDue - totalPaid
   const isCardPayment = ["credit", "debit"].includes(paymentMethod)
 
+  const handleAmountChange = (raw: string) => {
+    // Empty / invalid input must not poison state with NaN (crashed toFixed render).
+    if (raw.trim() === "") {
+      setAmount(0)
+      return
+    }
+    const parsed = Number.parseFloat(raw)
+    if (Number.isNaN(parsed)) return
+    // Clamp overpay at input time; submit re-validates as backstop.
+    setAmount(Math.min(Math.max(parsed, 0), Math.max(remainingBalance, 0)))
+  }
+
   return (
     <form onSubmit={handleSubmit} className="w-full space-y-4">
+      {isCardPayment && providerHint && (
+        <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs" role="status">
+          {providerHint}
+        </p>
+      )}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <Label htmlFor="amount">Payment Amount</Label>
@@ -102,9 +135,9 @@ export function PaymentForm({ orderId, totalDue, totalPaid }: PaymentFormProps) 
                   setAmount(remainingBalance)
                 }
               }}
-              className="h-4 w-4 rounded border-gray-300"
+              className="h-6 w-6 rounded border-gray-300"
             />
-            <Label htmlFor="splitPayment" className="text-sm">
+            <Label htmlFor="splitPayment" className="min-h-[44px] text-sm flex items-center">
               Split Payment
             </Label>
           </div>
@@ -115,8 +148,8 @@ export function PaymentForm({ orderId, totalDue, totalPaid }: PaymentFormProps) 
           step="0.01"
           min="0.01"
           max={remainingBalance}
-          value={amount}
-          onChange={(e) => setAmount(Number.parseFloat(e.target.value))}
+          value={Number.isNaN(amount) ? 0 : amount}
+          onChange={(e) => handleAmountChange(e.target.value)}
           required
         />
       </div>
@@ -128,40 +161,32 @@ export function PaymentForm({ orderId, totalDue, totalPaid }: PaymentFormProps) 
           onValueChange={(value) => setPaymentMethod(value as PaymentMethod)}
           className="grid grid-cols-2 gap-2"
         >
-          <div className="flex items-center space-x-2">
-            <RadioGroupItem value="cash" id="cash" />
-            <Label htmlFor="cash">Cash</Label>
-          </div>
-          <div className="flex items-center space-x-2">
-            <RadioGroupItem value="credit" id="credit" />
-            <Label htmlFor="credit">Credit Card</Label>
-          </div>
-          <div className="flex items-center space-x-2">
-            <RadioGroupItem value="debit" id="debit" />
-            <Label htmlFor="debit">Debit Card</Label>
-          </div>
-          <div className="flex items-center space-x-2">
-            <RadioGroupItem value="mobile" id="mobile" />
-            <Label htmlFor="mobile">Mobile Payment</Label>
-          </div>
-          <div className="flex items-center space-x-2">
-            <RadioGroupItem value="gift" id="gift" />
-            <Label htmlFor="gift">Gift Card</Label>
-          </div>
+          {([
+            ["cash", "Cash"],
+            ["credit", "Credit Card"],
+            ["debit", "Debit Card"],
+            ["mobile", "Mobile Payment"],
+            ["gift", "Gift Card"],
+          ] as [PaymentMethod, string][]).map(([value, label]) => (
+            <Label key={value} htmlFor={`pay-${value}`} className="flex min-h-[48px] cursor-pointer items-center gap-3 rounded-md border px-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-accent">
+              <RadioGroupItem value={value} id={`pay-${value}`} className="h-5 w-5" />
+              <span className="text-sm font-medium">{label}</span>
+            </Label>
+          ))}
         </RadioGroup>
       </div>
 
       {isCardPayment && (
         <div className="space-y-2">
-          <Label htmlFor="paymentMethodId">Stripe Payment Method ID (Optional)</Label>
+          <Label htmlFor="paymentMethodId">Terminal reference (optional)</Label>
           <Input
             id="paymentMethodId"
-            placeholder="pm_... (from Stripe Terminal)"
+            placeholder="pm_... / terminal receipt #"
             value={paymentMethodId}
             onChange={(e) => setPaymentMethodId(e.target.value)}
           />
           <p className="text-xs text-muted-foreground">
-            Leave empty to use simulated provider. Enter a Stripe payment method ID for real card processing.
+            Manual recording only — no card is charged here. Card capture happens on the terminal; enter its reference above.
           </p>
         </div>
       )}
@@ -176,14 +201,14 @@ export function PaymentForm({ orderId, totalDue, totalPaid }: PaymentFormProps) 
         />
       </div>
 
-      <Button type="submit" className="w-full" disabled={isSubmitting}>
+      <Button type="submit" size="lg" className="min-h-[48px] w-full" disabled={isSubmitting || !(amount > 0)}>
         {isSubmitting ? (
           <>
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             Processing...
           </>
         ) : (
-          `Process ${isSplitPayment ? "Partial" : "Full"} Payment ($${amount.toFixed(2)})`
+          `Process ${isSplitPayment ? "Partial" : "Full"} Payment ($${(Number.isNaN(amount) ? 0 : amount).toFixed(2)})`
         )}
       </Button>
     </form>

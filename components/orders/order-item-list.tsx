@@ -17,9 +17,18 @@ export function OrderItemList({ items, onItemClick, editable = true }: OrderItem
   const handleQuantityChange = (id: string, change: number, currentQuantity: number) => {
     const newQuantity = currentQuantity + change
     if (newQuantity <= 0) {
+      // Don't silently delete on decrement — clamp at 1 and force explicit trash tap.
+      // A slip on "-" during rush must not void a line.
+      if (change < 0) return
       removeItem(id)
     } else {
       updateQuantity(id, newQuantity)
+    }
+  }
+
+  const confirmRemove = (id: string, title: string) => {
+    if (window.confirm(`Remove "${title}" from this order?`)) {
+      removeItem(id)
     }
   }
 
@@ -64,37 +73,40 @@ export function OrderItemList({ items, onItemClick, editable = true }: OrderItem
           </div>
 
           {editable && (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
               <Button
                 variant="outline"
-                size="icon"
-                className="h-7 w-7"
+                size="icon-lg"
+                className="h-11 w-11"
                 onClick={() => handleQuantityChange(item.id, -1, item.quantity)}
+                aria-label={`Decrease quantity of ${item.title}`}
               >
-                <Minus className="h-3 w-3" />
+                <Minus className="h-4 w-4" />
               </Button>
-              <span className="w-5 text-center">{item.quantity}</span>
+              <span className="w-5 text-center tabular-nums">{item.quantity}</span>
               <Button
                 variant="outline"
-                size="icon"
-                className="h-7 w-7"
+                size="icon-lg"
+                className="h-11 w-11"
                 onClick={() => handleQuantityChange(item.id, 1, item.quantity)}
+                aria-label={`Increase quantity of ${item.title}`}
               >
-                <Plus className="h-3 w-3" />
+                <Plus className="h-4 w-4" />
               </Button>
               <Button
                 variant="ghost"
-                size="icon"
-                className="h-7 w-7 text-red-500 hover:text-red-600"
-                onClick={() => removeItem(item.id)}
+                size="icon-lg"
+                className="ml-2 h-11 w-11 border border-destructive/30 text-red-500 hover:text-red-600"
+                onClick={() => confirmRemove(item.id, item.title)}
+                aria-label={`Remove ${item.title} from order`}
               >
                 <Trash2 className="h-4 w-4" />
               </Button>
               {onItemClick && (
                 <Button
                   variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
+                  size="icon-lg"
+                  className="h-11 w-11"
                   onClick={() => {
                     // This is a placeholder since we don't have the full MenuItem object
                     // In a real implementation, you'd need to fetch the full item or store it
