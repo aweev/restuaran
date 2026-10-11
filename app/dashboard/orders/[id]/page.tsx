@@ -42,6 +42,8 @@ export default function OrderDetailsPage() {
   const [splitBusy, setSplitBusy] = useState<number | null>(null)
   const [splitMethod, setSplitMethod] = useState<PaymentMethod>("cash")
   const [splitting, setSplitting] = useState(false)
+  const [splitMode, setSplitMode] = useState<"equal" | "itemized">("equal")
+  const [seatMap, setSeatMap] = useState<Record<string, number>>({})
   const [cashTendered, setCashTendered] = useState("")
   const [voidOpen, setVoidOpen] = useState(false)
   const [voidReason, setVoidReason] = useState("")
@@ -58,17 +60,19 @@ export default function OrderDetailsPage() {
     try {
       const raw = localStorage.getItem(splitKey)
       if (raw) {
-        const parsed = JSON.parse(raw) as { splitId?: string; paid?: boolean[] }
+        const parsed = JSON.parse(raw) as { splitId?: string; paid?: boolean[]; seatMap?: Record<string, number>; mode?: "equal" | "itemized" }
         if (parsed.splitId) setSplitId(parsed.splitId)
         if (Array.isArray(parsed.paid)) setSplitPaid(parsed.paid)
+        if (parsed.seatMap) setSeatMap(parsed.seatMap)
+        if (parsed.mode) setSplitMode(parsed.mode)
       }
     } catch { /* private mode */ }
   }, [splitKey])
   useEffect(() => {
     try {
-      if (splitId || splitPaid.length > 0) localStorage.setItem(splitKey, JSON.stringify({ splitId, paid: splitPaid }))
+      if (splitId || splitPaid.length > 0) localStorage.setItem(splitKey, JSON.stringify({ splitId, paid: splitPaid, seatMap, mode: splitMode }))
     } catch { /* ignore */ }
-  }, [splitId, splitPaid, splitKey])
+  }, [splitId, splitPaid, seatMap, splitMode, splitKey])
 
   useEffect(() => {
     const loadOrder = async () => {
@@ -224,6 +228,7 @@ export default function OrderDetailsPage() {
       if (result.success) {
         setSplitId(id)
         setSplitPaid(new Array(n).fill(false))
+        setSeatMap({})
         toast({ title: "Success", description: `Check split ${n} ways (${(remaining / n).toFixed(2)} each of remaining $${remaining.toFixed(2)})` })
       } else {
         toast({ title: "Error", description: result.error?.message ?? "Split rejected", variant: "destructive" })
@@ -250,6 +255,51 @@ export default function OrderDetailsPage() {
         "order.recordPayment",
         { orderId: order.id, method: splitMethod, amount: Math.round(perSeat * 100) / 100, splitIndex: index },
         { requestId: `split-pay:${order.id}:${splitId}:${index}` },
+      )
+      if (result.success) {
+        setSplitPaid((p) => p.map((v, j) => (j === index ? true : v)))
+        await fetchOrders()
+      } else {
+        toast({ title: "Error", description: result.error?.message ?? "Payment rejected", variant: "destructive" })
+      }
+    } finally {
+      setSplitBusy(null)
+    }
+  }
+
+  // ---- Itemized seats: assign each line to a seat, pay per-seat totals ----
+  // Seat totals = line subtotal share, scaled to the order total so tax and
+  // discounts ride along proportionally. Payments still record with splitIndex,
+  // so the kernel ledger stays split-aware without moving lines between orders.
+  const seatOf = (lineId: string) => seatMap[lineId] ?? 0
+  const seatSubtotal = (seat: number) => {
+    if (!order) return 0
+    return order.items.filter((l) => seatOf(l.id) === seat).reduce((s, l) => s + l.totalPrice, 0)
+  }
+  const seatTotal = (seat: number) => {
+    if (!order || splitPaid.length === 0) return 0
+    if (order.subtotal <= 0) return order.total / splitPaid.length
+    return (order.total * seatSubtotal(seat)) / order.subtotal
+  }
+  const handleItemizedSeatPayment = async (index: number) => {
+    if (!order || splitPaid[index] || splitBusy !== null) return
+    const paid = order.payments.reduce((sum, p) => sum + p.amount, 0)
+    const remaining = order.total - paid
+    if (remaining <= 0) {
+      toast({ title: "Nothing due", description: "Remaining balance is already zero." })
+      return
+    }
+    const due = Math.min(Math.round(seatTotal(index) * 100) / 100, Math.round(remaining * 100) / 100)
+    if (due <= 0) {
+      toast({ title: "Seat is empty", description: `Move some lines to Seat ${index + 1} first.` })
+      return
+    }
+    setSplitBusy(index)
+    try {
+      const result = await run(
+        "order.recordPayment",
+        { orderId: order.id, method: splitMethod, amount: due, splitIndex: index },
+        { requestId: `split-pay:${order.id}:${splitId}:itemized:${index}` },
       )
       if (result.success) {
         setSplitPaid((p) => p.map((v, j) => (j === index ? true : v)))
@@ -561,16 +611,52 @@ export default function OrderDetailsPage() {
                     )}
                   </div>
                   {splitPaid.length > 0 && order && (
-                    <ul className="space-y-1">
-                      {splitPaid.map((paid, i) => (
-                        <li key={i} className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-sm">
-                          <span>Seat {i + 1} — ${(order.total / splitPaid.length).toFixed(2)} · {paid ? "paid" : "unpaid"}</span>
-                          <Button size="lg" className="min-h-[44px]" variant={paid ? "default" : "outline"} disabled={paid || splitBusy !== null} onClick={() => void handleSeatPayment(i)}>
-                            {splitBusy === i ? "Recording…" : paid ? "✓ Paid" : "Record payment"}
-                          </Button>
-                        </li>
-                      ))}
-                    </ul>
+                    <>
+                      <div className="flex gap-2" role="group" aria-label="Split mode">
+                        <Button size="lg" className="min-h-[44px]" variant={splitMode === "equal" ? "default" : "outline"} onClick={() => setSplitMode("equal")}>Equal shares</Button>
+                        <Button size="lg" className="min-h-[44px]" variant={splitMode === "itemized" ? "default" : "outline"} onClick={() => setSplitMode("itemized")}>By seat (items)</Button>
+                      </div>
+                      {splitMode === "equal" ? (
+                        <ul className="space-y-1">
+                          {splitPaid.map((paid, i) => (
+                            <li key={i} className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-sm">
+                              <span>Seat {i + 1} — ${(order.total / splitPaid.length).toFixed(2)} · {paid ? "paid" : "unpaid"}</span>
+                              <Button size="lg" className="min-h-[44px]" variant={paid ? "default" : "outline"} disabled={paid || splitBusy !== null} onClick={() => void handleSeatPayment(i)}>
+                                {splitBusy === i ? "Recording…" : paid ? "✓ Paid" : "Record payment"}
+                              </Button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div className="space-y-3">
+                          <div className="space-y-1">
+                            {order.items.map((line) => (
+                              <div key={line.id} className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-sm">
+                                <span className="min-w-0 flex-1 truncate">{line.quantity}× {line.title} — ${line.totalPrice.toFixed(2)}</span>
+                                <Select value={String(seatOf(line.id))} onValueChange={(v) => setSeatMap((m) => ({ ...m, [line.id]: Number(v) }))}>
+                                  <SelectTrigger className="h-11 w-28" aria-label={`Seat for ${line.title}`}><SelectValue /></SelectTrigger>
+                                  <SelectContent>
+                                    {splitPaid.map((_, i) => (
+                                      <SelectItem key={i} value={String(i)}>Seat {i + 1}</SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            ))}
+                          </div>
+                          <ul className="space-y-1">
+                            {splitPaid.map((paid, i) => (
+                              <li key={i} className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-sm">
+                                <span>Seat {i + 1} — ${seatTotal(i).toFixed(2)} ({order.items.filter((l) => seatOf(l.id) === i).length} line(s)) · {paid ? "paid" : "unpaid"}</span>
+                                <Button size="lg" className="min-h-[44px]" variant={paid ? "default" : "outline"} disabled={paid || splitBusy !== null} onClick={() => void handleItemizedSeatPayment(i)}>
+                                  {splitBusy === i ? "Recording…" : paid ? "✓ Paid" : "Record payment"}
+                                </Button>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </>
                   )}
                 </CardContent>
               </Card>

@@ -29,13 +29,17 @@ export function PaymentForm({ orderId, totalDue, totalPaid }: PaymentFormProps) 
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isSplitPayment, setIsSplitPayment] = useState(false)
   const [providerHint, setProviderHint] = useState<string | null>(null)
+  const [liveCards, setLiveCards] = useState(false)
 
   // Honest card banner: never imply real processing when manual/simulated.
   useEffect(() => {
     let alive = true
     void ask<{ provider: string; liveCards: boolean; hint: string }>("get.paymentProvider", {})
       .then((r) => {
-        if (alive && r.success) setProviderHint((r.data as { hint: string }).hint)
+        if (alive && r.success) {
+          setProviderHint((r.data as { hint: string }).hint)
+          setLiveCards(Boolean((r.data as { liveCards: boolean }).liveCards))
+        }
       })
       .catch(() => null)
     return () => {
@@ -59,6 +63,17 @@ export function PaymentForm({ orderId, totalDue, totalPaid }: PaymentFormProps) 
       toast({
         title: "Error",
         description: "Payment amount cannot exceed the remaining balance",
+        variant: "destructive",
+      })
+      return
+    }
+
+    // Fail closed on cards: without a live terminal, a card payment is only a
+    // recorded slip — require the reference so nobody mistakes it for capture.
+    if (isCardPayment && !liveCards && reference.trim().length < 3) {
+      toast({
+        title: "Terminal reference required",
+        description: "No card gateway is connected. Enter the terminal slip / auth code so the record is traceable.",
         variant: "destructive",
       })
       return
@@ -192,12 +207,13 @@ export function PaymentForm({ orderId, totalDue, totalPaid }: PaymentFormProps) 
       )}
 
       <div className="space-y-2">
-        <Label htmlFor="reference">Reference (Optional)</Label>
+        <Label htmlFor="reference">Reference {isCardPayment && !liveCards ? "(required — no gateway connected)" : "(Optional)"}</Label>
         <Input
           id="reference"
-          placeholder="Transaction ID, Last 4 digits, etc."
+          placeholder={isCardPayment && !liveCards ? "Terminal slip / auth code — required" : "Transaction ID, Last 4 digits, etc."}
           value={reference}
           onChange={(e) => setReference(e.target.value)}
+          aria-required={isCardPayment && !liveCards}
         />
       </div>
 

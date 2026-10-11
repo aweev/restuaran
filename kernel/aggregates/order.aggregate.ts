@@ -47,7 +47,7 @@ export interface OrderState extends AttributeBag {
   customerId: Id | null
   dinerName: string | null
   serverId: Id | null
-  channel: "pos" | "kiosk" | "platform" | "phone" | "takeaway" | "delivery" | "dine-in"
+  channel: "pos" | "kiosk" | "platform" | "phone" | "takeaway" | "delivery" | "dine-in" | "handheld"
   status: "draft" | "open" | "closed" | "voided"
   /** Free-text ticket notes (allergies, timing). Set via `order.setNotes`. */
   notes: string | null

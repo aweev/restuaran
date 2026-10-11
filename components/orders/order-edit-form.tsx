@@ -133,32 +133,35 @@ export function OrderEditForm({ order, onCancel }: OrderEditFormProps) {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-3">
                     <Button
                       type="button"
                       variant="outline"
-                      size="icon"
-                      className="h-7 w-7"
+                      size="icon-lg"
+                      className="h-11 w-11"
                       onClick={() => handleUpdateQuantity(item.id, item.quantity - 1)}
+                      aria-label={`Decrease quantity of ${item.title}`}
                     >
                       -
                     </Button>
-                    <span className="w-5 text-center">{item.quantity}</span>
+                    <span className="w-5 text-center tabular-nums">{item.quantity}</span>
                     <Button
                       type="button"
                       variant="outline"
-                      size="icon"
-                      className="h-7 w-7"
+                      size="icon-lg"
+                      className="h-11 w-11"
                       onClick={() => handleUpdateQuantity(item.id, item.quantity + 1)}
+                      aria-label={`Increase quantity of ${item.title}`}
                     >
                       +
                     </Button>
                     <Button
                       type="button"
                       variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-red-500 hover:text-red-600"
-                      onClick={() => handleRemoveItem(item.id)}
+                      size="icon-lg"
+                      className="ml-2 h-11 w-11 border border-destructive/30 text-red-500 hover:text-red-600"
+                      onClick={() => { if (window.confirm(`Remove "${item.title}" from this order?`)) handleRemoveItem(item.id) }}
+                      aria-label={`Remove ${item.title} from order`}
                     >
                       <Trash2 className="h-4 w-4" />
                     </Button>

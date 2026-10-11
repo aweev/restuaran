@@ -20,26 +20,23 @@ interface CategoryFilterProps {
 export function CategoryFilter({ categories, selectedCategory, onCategoryChange }: CategoryFilterProps) {
   if (categories) {
     return (
-      <div className="flex gap-3 mb-4 overflow-x-auto pb-2">
+      <div className="flex gap-3 mb-4 overflow-x-auto pb-2" role="group" aria-label="Menu categories">
         {categories.map((category) => {
           const active = category.id === selectedCategory
 
           return (
-            <div
+            <button
               key={category.id}
+              type="button"
               onClick={() => onCategoryChange?.(category.id)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") onCategoryChange?.(category.id)
-              }}
-              className={`flex flex-col items-center p-3 rounded-xl min-w-[100px] ${
-                active ? "bg-green-50 text-green-600" : "bg-white"
-              } border cursor-pointer hover:bg-green-50`}
+              aria-pressed={active}
+              className={`flex min-h-[44px] flex-col items-center justify-center rounded-xl border p-3 min-w-[100px] cursor-pointer outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
+                active ? "border-green-700/40 bg-green-500/10 font-semibold text-green-800 dark:text-green-300" : "bg-card text-card-foreground hover:bg-accent"
+              }`}
             >
               <span className="text-sm font-medium">{category.label}</span>
-              <span className="text-xs text-gray-500">{category.items} Items</span>
-            </div>
+              <span className="text-xs text-muted-foreground">{category.items} Items</span>
+            </button>
           )
         })}
       </div>

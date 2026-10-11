@@ -125,20 +125,22 @@ export function ItemCustomizationModal({ item, isOpen, onClose, existingItem }: 
               <Button
                 type="button"
                 variant="outline"
-                size="icon"
-                className="h-8 w-8"
+                size="icon-lg"
+                className="h-11 w-11"
                 onClick={() => handleQuantityChange(-1)}
                 disabled={quantity <= 1}
+                aria-label={`Decrease quantity of ${item.title}`}
               >
                 -
               </Button>
-              <span className="w-8 text-center">{quantity}</span>
+              <span className="w-8 text-center tabular-nums" aria-live="polite">{quantity}</span>
               <Button
                 type="button"
                 variant="outline"
-                size="icon"
-                className="h-8 w-8"
+                size="icon-lg"
+                className="h-11 w-11"
                 onClick={() => handleQuantityChange(1)}
+                aria-label={`Increase quantity of ${item.title}`}
               >
                 +
               </Button>
