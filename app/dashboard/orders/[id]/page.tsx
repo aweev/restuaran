@@ -18,11 +18,14 @@ import { OrderSocketIntegration } from "@/components/orders/order-socket-integra
 import { Loader2, Printer, ArrowLeft, Edit, Ban, Clock } from "lucide-react"
 import { formatDistanceToNow, format } from "date-fns"
 import type { Order, OrderStatus, PaymentMethod } from "@/types"
-import { useCommand } from "@/kernel/react/kernel-provider"
+import { useCommand, useKernel } from "@/kernel/react/kernel-provider"
 import { printReceipt } from "@/components/pos/receipt"
 import { printHtml } from "@/lib/print"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { getVenueSettings } from "@/lib/settings"
+import { useCart } from "@/context/CartContext"
+import type { MenuItem } from "@/types"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
@@ -51,6 +54,11 @@ export default function OrderDetailsPage() {
   const [refundReason, setRefundReason] = useState("")
   const [refundAmount, setRefundAmount] = useState("")
   const { run } = useCommand()
+  const { ask } = useKernel()
+  const { addItem } = useCart()
+  const [trail, setTrail] = useState<{ discounts: { label: string; amount: number; appliedBy: string }[]; tips: { amount: number; splitIndex: number | null }[]; voided: number; comped: number } | null>(null)
+  const [gratuityBusy, setGratuityBusy] = useState(false)
+  const [reordering, setReordering] = useState(false)
 
   const orderId = params.id as string
   const splitKey = `pos.split.${orderId}`
@@ -97,7 +105,6 @@ export default function OrderDetailsPage() {
     if (!loading) {
       const foundOrder = state.orders.find((o) => o.id === orderId)
       setOrder(foundOrder || null)
-
       if (!foundOrder) {
         toast({
           title: "Error",
@@ -107,6 +114,71 @@ export default function OrderDetailsPage() {
       }
     }
   }, [loading, state.orders, orderId])
+
+  // Money trail: full aggregate state carries the discount ledger (who + why),
+  // tips, and voided/comped line counts the board collapses to totals.
+  useEffect(() => {
+    if (!order) return
+    let alive = true
+    void ask<{ state: { discounts?: { label: string; amount: number; appliedBy: string }[]; tips?: { amount: number; splitIndex: number | null }[]; lines?: { status: string; comped?: boolean }[] } }>("get.order", { orderId: order.id })
+      .then((r) => {
+        if (!alive || !r.success) return
+        const s = r.data.state
+        setTrail({
+          discounts: (s.discounts ?? []).map((d) => ({ label: d.label, amount: d.amount, appliedBy: d.appliedBy })),
+          tips: (s.tips ?? []).map((t) => ({ amount: t.amount, splitIndex: t.splitIndex })),
+          voided: (s.lines ?? []).filter((l) => l.status === "voided").length,
+          comped: (s.lines ?? []).filter((l) => l.comped).length,
+        })
+      })
+      .catch(() => null)
+    return () => { alive = false }
+  }, [ask, order?.id])
+
+  const gratuityRate = getVenueSettings().gratuityRate
+  const gratuityBase = order ? Math.max(0, order.subtotal - order.discount) : 0
+  const gratuityAmount = Math.round(gratuityBase * gratuityRate * 100) / 100
+
+  const handleGratuity = async () => {
+    if (!order || gratuityAmount <= 0 || gratuityBusy) return
+    setGratuityBusy(true)
+    try {
+      const result = await run("order.addTip", { orderId: order.id, amount: gratuityAmount })
+      if (result.success) {
+        toast({ title: "Gratuity added", description: `${(gratuityRate * 100).toFixed(1)}% service charge ($${gratuityAmount.toFixed(2)}) recorded.` })
+        await fetchOrders()
+      } else {
+        toast({ title: "Gratuity rejected", description: result.error?.message ?? "Rejected", variant: "destructive" })
+      }
+    } finally {
+      setGratuityBusy(false)
+    }
+  }
+
+  const handleReorder = async () => {
+    if (!order || reordering) return
+    setReordering(true)
+    try {
+      for (const line of order.items) {
+        const menuItem: MenuItem = {
+          id: line.menuItemId,
+          title: line.title,
+          description: "",
+          price: line.price,
+          image: line.image || "",
+          category: "all",
+          type: line.type,
+          available: true,
+        }
+        await addItem(menuItem, line.quantity, [], line.specialInstructions ?? undefined)
+      }
+      router.push("/dashboard/orders/new")
+    } catch {
+      toast({ title: "Reorder failed", description: "Some lines are 86'd or unavailable now.", variant: "destructive" })
+    } finally {
+      setReordering(false)
+    }
+  }
 
   const getNextStatus = (currentStatus: OrderStatus): OrderStatus | null => {
     const statusFlow: OrderStatus[] = ["pending", "preparing", "ready", "delivered", "completed"]
@@ -421,6 +493,11 @@ export default function OrderDetailsPage() {
               Edit Order
             </Button>
           )}
+          {(order.status === "completed" || order.status === "cancelled") && order.items.length > 0 && (
+            <Button variant="default" size="lg" className="min-h-[44px]" disabled={reordering} onClick={() => void handleReorder()} title="Copy these lines into a new draft order">
+              {reordering ? "Copying…" : "Fire again"}
+            </Button>
+          )}
           <Button variant="outline" size="lg" className="min-h-[44px]" onClick={handlePrintReceipt}>
             <Printer className="mr-2 h-4 w-4" />
             Print Receipt
@@ -576,6 +653,48 @@ export default function OrderDetailsPage() {
                     </Button>
                   )}
                 </CardFooter>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Adjustments & trail</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3 text-sm">
+                  {!trail ? (
+                    <p className="text-muted-foreground">Loading ledger…</p>
+                  ) : (
+                    <>
+                      {trail.discounts.length === 0 && trail.tips.length === 0 && trail.voided === 0 && trail.comped === 0 ? (
+                        <p className="text-muted-foreground">No discounts, gratuity, voids or comps on this check.</p>
+                      ) : (
+                        <ul className="space-y-1">
+                          {trail.discounts.map((d, i) => (
+                            <li key={i} className="flex justify-between gap-2 rounded-md border px-2 py-1.5">
+                              <span>Discount · {d.label} <span className="text-muted-foreground">by {d.appliedBy.slice(0, 8)}</span></span>
+                              <span className="font-medium tabular-nums">−${d.amount.toFixed(2)}</span>
+                            </li>
+                          ))}
+                          {trail.tips.map((t, i) => (
+                            <li key={i} className="flex justify-between gap-2 rounded-md border px-2 py-1.5">
+                              <span>Gratuity / tip{t.splitIndex != null ? ` · seat ${t.splitIndex + 1}` : ""}</span>
+                              <span className="font-medium tabular-nums">${t.amount.toFixed(2)}</span>
+                            </li>
+                          ))}
+                          {trail.voided > 0 && <li className="rounded-md border px-2 py-1.5 text-muted-foreground">▼ {trail.voided} line(s) voided (reason in event log)</li>}
+                          {trail.comped > 0 && <li className="rounded-md border px-2 py-1.5 text-muted-foreground">{trail.comped} line(s) comped</li>}
+                        </ul>
+                      )}
+                      {gratuityRate > 0 && order.status !== "cancelled" && (
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
+                          <span className="text-muted-foreground">Venue gratuity {(gratuityRate * 100).toFixed(1)}% of ${gratuityBase.toFixed(2)}</span>
+                          <Button size="lg" className="min-h-[44px]" variant="outline" disabled={gratuityBusy || gratuityAmount <= 0} onClick={() => void handleGratuity()}>
+                            {gratuityBusy ? "Adding…" : `Add gratuity ($${gratuityAmount.toFixed(2)})`}
+                          </Button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </CardContent>
               </Card>
 
               <Card>
