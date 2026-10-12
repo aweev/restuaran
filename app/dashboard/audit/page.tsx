@@ -39,8 +39,6 @@ const ACTION_LABELS: Record<string, string> = {
   "payment.refunded": "Payment refunded",
 };
 
-const FILTER_ACTIONS = ["all", ...Object.keys(ACTION_LABELS)];
-
 function detailSummary(row: AuditRow): string {
   const d = row.details ?? {};
   const parts: string[] = [];

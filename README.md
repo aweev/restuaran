@@ -1,8 +1,11 @@
-# Restaurant POS
+# Maison Chili POS — Restaurant OS
 
-A point-of-sale, kitchen-display and guest-ordering system for a working
+A point-of-sale, kitchen-display and handheld-ordering system for a working
 restaurant. Next.js 15 (App Router) · React 19 · Tailwind v4 · Postgres ·
 an event-sourced domain kernel under `kernel/`.
+
+> **Docs:** [`docs/README.md`](docs/README.md) is the map — user guide, kernel
+> reference, testing, troubleshooting, changelog, ADRs.
 
 ---
 
@@ -29,7 +32,9 @@ cp .env.example .env.local
 | `INTERNAL_EMIT_SECRET` | no | Enables the kernel's Socket.IO bridge            |
 | `NEXT_PUBLIC_SOCKET_URL` | no | Where the browser reaches the socket server     |
 | `WS_PORT`         | no       | Port for the standalone socket server (`npm run start:ws`) |
-| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_PHONE_NUMBER` | no | Enables SMS waitlist notifications |
+| `ROS_PAYMENT_PROVIDER` | no | `manual` (record-only) / `simulated-stripe` / `stripe-terminal` — see `docs/CARD-PILOT.md` |
+| `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | no | Required for live card capture + webhooks |
+| `NEXT_PUBLIC_APP_VERSION` | no | Build tag shown on login + fleet list |
 
 ### 3. Database
 
@@ -96,7 +101,7 @@ Every seeded account uses the password **`pos1234`**.
 | `npm run start:ws`         | Standalone Socket.IO server                   |
 | `npm run kernel:typecheck` | Typecheck the kernel in isolation             |
 | `npm run kernel:smoke`     | Kernel smoke tests                            |
-| `npm run kernel:sdk:check` | Regenerate + diff the public SDK              |
+| `npm run test:kernel`      | Kernel unit suite (33 tests, 12 files)        |
 
 ---
 
@@ -125,10 +130,14 @@ Money is `NUMERIC(12,2)`; never a float.
 ### The kernel
 
 `kernel/` is an event-sourced, multi-tenant command bus with projections
-(`kitchen.queue`, `tables.board`, `menu.board`, `inventory.board`,
-`reservations.board`, `waitlist.board`) and a plugin architecture. It is the
-intended direction for domain state; the REST routes in `app/api` remain the
-current read/write path for CRUD screens. See `kernel/README.md`.
+(`orders.board`, `kitchen.queue`, `tables.board`, `menu.board`,
+`inventory.board`, `reservations.board`, `customers.board`, `sales.board`,
+`staff.board`, `cash.board`, `payments.board`, `waitlist.board`, …) and a
+module system. **It is the canonical write path**: contexts and screens issue
+commands via `useCommand()` and read via `useProjection()`/`ask()` — see
+[`docs/KERNEL-REFERENCE.md`](docs/KERNEL-REFERENCE.md). Legacy REST
+`POST/PATCH/DELETE` under `app/api/*` are retired or return `410 Gone` with
+the kernel command to use instead (ADR-001).
 
 By default the kernel uses an in-memory event store in development. Set
 `ROS_USE_PG=1` and apply `kernel/event-store/schema.sql` to persist it.
