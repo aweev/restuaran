@@ -16,39 +16,38 @@ const ORDER: { key: string; match: string[] }[] = [
   { key: "newOrder", match: ["/dashboard/orders/new"] },
   { key: "menu", match: ["/dashboard/menu"] },
   { key: "tables", match: ["/dashboard/tables"] },
-  { key: "floor", match: ["/dashboard/tables/management"] },
-  { key: "reservations", match: ["/dashboard/reservations"] },
   { key: "kitchen", match: ["/dashboard/kitchen"] },
   { key: "kds", match: ["/dashboard/kitchen/display"] },
   { key: "inventory", match: ["/dashboard/inventory"] },
-  { key: "giftCards", match: ["/dashboard/gift-cards"] },
-  { key: "multiVenue", match: ["/dashboard/multi-venue"] },
+  { key: "cash", match: ["/dashboard/cash"] },
   { key: "reports", match: ["/dashboard/reports"] },
-  { key: "analytics", match: ["/dashboard/analytics"] },
+  { key: "zReport", match: ["/dashboard/reports/z-report"] },
+  { key: "audit", match: ["/dashboard/audit"] },
   { key: "staff", match: ["/dashboard/staff"] },
+  { key: "diagnostics", match: ["/dashboard/diagnostics"] },
   { key: "settings", match: ["/dashboard/settings"] },
 ];
 
 /** Client module toggles → nav keys. RBAC still applies first. */
 const MODULE_NAV: Record<ModuleKey, string[]> = {
   pos: ["orders", "newOrder"],
-  tables: ["tables", "floor"],
+  tables: ["tables"],
   kitchen: ["kitchen", "kds"],
   inventory: ["inventory"],
-  reservations: ["reservations"],
-  giftCards: ["giftCards"],
+  reservations: [],
+  giftCards: [],
   promotions: [],
-  platform: ["multiVenue"],
+  platform: [],
 };
 
 /** Solo-operator essentials: ring, fire, seat, cash. Settings stays so solo can exit. */
 const SOLO_KEYS = new Set(["dashboard", "orders", "newOrder", "tables", "kitchen", "kds", "settings"]);
 
 const GROUPS: { title: string; keys: string[] }[] = [
-  { title: "Service", keys: ["dashboard", "orders", "newOrder", "tables", "floor", "reservations", "kitchen", "kds"] },
+  { title: "Service", keys: ["dashboard", "orders", "newOrder", "tables", "kitchen", "kds"] },
   { title: "Back-of-house", keys: ["menu", "inventory", "staff"] },
-  { title: "Money", keys: ["giftCards", "reports", "analytics", "multiVenue"] },
-  { title: "Admin", keys: ["settings"] },
+  { title: "Money", keys: ["cash", "reports", "zReport", "audit"] },
+  { title: "Admin", keys: ["settings", "diagnostics"] },
 ];
 
 export function DashboardNav({ onNavigate }: { onNavigate?: () => void }) {

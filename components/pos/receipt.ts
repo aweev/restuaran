@@ -1,7 +1,7 @@
 "use client";
 
 import jsPDF from "jspdf";
-import { getVenueSettings } from "@/lib/settings";
+import { getVenueSettings, roundCash } from "@/lib/settings";
 import type { Order } from "@/types";
 
 function money(n: number) {
@@ -39,12 +39,14 @@ export function printReceipt(order: Order, cashTendered?: number) {
   line(`Tax: ${money(order.tax)}`);
   if (order.discount > 0) line(`Discount: -${money(order.discount)}`);
   line(`TOTAL: ${money(order.total)}`, { bold: true, size: 11, gap: 16 });
+  const cashTotal = roundCash(order.total, venue.roundingIncrement);
+  if (cashTotal !== order.total) line(`Cash total (rounded): ${money(cashTotal)}`);
   if (order.payments?.length) {
     for (const p of order.payments) line(`${p.method.toUpperCase()}: ${money(p.amount)}`);
   }
   if (typeof cashTendered === "number" && cashTendered > 0) {
     line(`Tendered: ${money(cashTendered)}`);
-    line(`Change due: ${money(Math.max(0, cashTendered - order.total))}`, { bold: true });
+    line(`Change due: ${money(Math.max(0, cashTendered - cashTotal))}`, { bold: true });
   }
   line("--------------------------------");
   line("Thank you!", { gap: 8 });

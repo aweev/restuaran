@@ -4,6 +4,7 @@ import { useMemo, useState } from "react"
 import Link from "next/link"
 import { useCommand, useProjection } from "@/kernel/react/kernel-provider"
 import type { OrderBoardRow, OrderBoardState } from "@/kernel/projections/orders-board"
+import { boardGroup as uiStatus } from "@/kernel/order-status"
 import {
   PageHeader,
   LoadingGrid,
@@ -18,6 +19,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { useFeedback } from "@/lib/feedback"
+import { RequireCapability } from "@/lib/auth-guard"
 import { Search, Plus } from "lucide-react"
 
 /**
@@ -32,25 +34,18 @@ import { Search, Plus } from "lucide-react"
 
 const money = (n: number) => `$${n.toFixed(2)}`
 
-/**
- * Board status → the vocabulary the rest of the app already speaks. The kernel
- * models the lifecycle as order-level `draft|open|closed|voided`, while the UI
- * has always grouped by fulfilment (`pending`/`preparing`/`ready`/…). Deriving
- * the latter from the former keeps one source of truth without inventing states
- * the domain does not have.
- */
-function uiStatus(row: OrderBoardRow): string {
-  if (row.status === "closed") return "completed"
-  if (row.status === "voided") return "voided"
-  if (row.status === "draft") return "draft"
-  if (row.lines.some((l) => l.status === "ready")) return "ready"
-  if (row.lines.some((l) => l.status === "preparing")) return "preparing"
-  if (row.lines.some((l) => l.status === "sent")) return "pending"
-  return "served"
-}
+// uiStatus: canonical board grouping — see kernel/order-status.ts.
 
 export default function OrdersPage() {
-  const { state, connection } = useProjection<OrderBoardState>("orders.board", 1500)
+  return (
+    <RequireCapability capability="order:view">
+      <OrdersBoard />
+    </RequireCapability>
+  )
+}
+
+function OrdersBoard() {
+  const { state, connection } = useProjection<OrderBoardState>("orders.board", 4000)
   const { run, pending, pendingCount } = useCommand()
   const { notify } = useFeedback()
   const [query, setQuery] = useState("")
@@ -135,14 +130,17 @@ export default function OrdersPage() {
       <Tabs value={tab} onValueChange={setTab} id="order-filters">
         <TabsList className="mb-4 flex-wrap">
           <TabsTrigger value="all">All ({counts.all ?? 0})</TabsTrigger>
+          <TabsTrigger value="draft">⏸ Parked ({counts.draft ?? 0})</TabsTrigger>
           <TabsTrigger value="pending">Pending ({counts.pending ?? 0})</TabsTrigger>
           <TabsTrigger value="preparing">Preparing ({counts.preparing ?? 0})</TabsTrigger>
           <TabsTrigger value="ready">Ready ({counts.ready ?? 0})</TabsTrigger>
+          <TabsTrigger value="served">Served ({counts.served ?? 0})</TabsTrigger>
           <TabsTrigger value="completed">Completed ({counts.completed ?? 0})</TabsTrigger>
+          <TabsTrigger value="voided">Voided ({counts.voided ?? 0})</TabsTrigger>
         </TabsList>
 
         <TabsContent value={tab} className="space-y-4">
-          <OrdersGrid rows={visible} pending={pending} onSend={sendToKitchen} query={query} />
+          <OrdersGrid rows={visible} pending={pending} onSend={sendToKitchen} query={query} tab={tab} />
         </TabsContent>
       </Tabs>
     </div>
@@ -160,20 +158,24 @@ function OrdersGrid({
   pending,
   onSend,
   query,
+  tab,
 }: {
   rows: OrderBoardRow[]
   pending: boolean
   onSend: (orderId: string) => void
   query: string
+  tab: string
 }) {
   if (rows.length === 0) {
     return (
       <EmptyState
-        title={query ? "No matching orders" : "No checks yet"}
+        title={query ? "No matching orders" : tab === "draft" ? "No parked checks" : "No checks yet"}
         hint={
           query
             ? "Try a different name, table or item."
-            : "Checks appear here the moment a server rings one in."
+            : tab === "draft"
+              ? "Parked checks wait here — ring items on New Order, then Park instead of sending."
+              : "Checks appear here the moment a server rings one in."
         }
       />
     )

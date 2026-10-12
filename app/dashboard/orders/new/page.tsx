@@ -97,12 +97,25 @@ export default function NewOrderPage() {
   return (
     <div className="flex h-full flex-col md:flex-row">
       <div className="flex-1 overflow-auto p-4">
-        <div className="mb-6 flex items-center justify-between">
+        <div className="mb-6 flex items-center justify-between gap-2">
           <h2 className="text-3xl font-bold tracking-tight">New Order</h2>
-          <Button onClick={() => router.push("/dashboard/orders")}>
-            <ShoppingCart className="mr-2 h-4 w-4" />
-            Cart ({cartState.items.length})
-          </Button>
+          <div className="flex gap-2">
+            {cartState.items.length > 0 && (
+              <Button
+                variant="outline"
+                size="lg"
+                className="min-h-[44px]"
+                title="Keep this check as a parked draft — resume from Orders › Parked"
+                onClick={() => router.push("/dashboard/orders")}
+              >
+                ⏸ Park ({cartState.items.length})
+              </Button>
+            )}
+            <Button size="lg" className="min-h-[44px]" onClick={() => router.push("/dashboard/orders")}>
+              <ShoppingCart className="mr-2 h-4 w-4" />
+              Cart ({cartState.items.length})
+            </Button>
+          </div>
         </div>
 
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center">

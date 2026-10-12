@@ -12,6 +12,18 @@ export interface VenueSettings {
   gratuityRate: number;
   /** Opening hours free text, e.g. "Mon–Sun 11:00–23:00". */
   hours: string;
+  /** LAN print-service endpoint (POST {title, html}). Empty = browser print dialog. */
+  printerEndpoint: string;
+  /** Printed under every receipt / Day Close. */
+  receiptFooter: string;
+  /** Shown on the login screen as "Stuck? Call …". Set once by the manager. */
+  supportContact: string;
+  /**
+   * Cash-rounding increment, e.g. 0.05 for nickel rounding. 0 = exact.
+   * Display/tender rule only — the ledger always stays exact; only the cash
+   * collected and change given round. Card payments are never rounded.
+   */
+  roundingIncrement: number;
 }
 
 const VENUE_KEY = "pos.venue.settings";
@@ -40,6 +52,10 @@ const DEFAULTS: VenueSettings = {
   slaMinutes: 20,
   gratuityRate: 0,
   hours: "",
+  printerEndpoint: "",
+  receiptFooter: "Thank you — come again!",
+  supportContact: "",
+  roundingIncrement: 0,
 };
 
 function read<T>(key: string, fallback: T): T {
@@ -79,6 +95,10 @@ export function getVenueSettings(): VenueSettings {
     typeof raw.gratuityRate === "number" && raw.gratuityRate >= 0 && raw.gratuityRate <= 1
       ? raw.gratuityRate
       : DEFAULTS.gratuityRate;
+  const roundingIncrement =
+    typeof raw.roundingIncrement === "number" && raw.roundingIncrement >= 0 && raw.roundingIncrement <= 1
+      ? raw.roundingIncrement
+      : DEFAULTS.roundingIncrement;
   return {
     name: typeof raw.name === "string" ? raw.name : DEFAULTS.name,
     currency: typeof raw.currency === "string" && raw.currency ? raw.currency : DEFAULTS.currency,
@@ -89,6 +109,10 @@ export function getVenueSettings(): VenueSettings {
     slaMinutes,
     gratuityRate,
     hours: typeof raw.hours === "string" ? raw.hours : DEFAULTS.hours,
+    printerEndpoint: typeof raw.printerEndpoint === "string" ? raw.printerEndpoint : DEFAULTS.printerEndpoint,
+    receiptFooter: typeof raw.receiptFooter === "string" ? raw.receiptFooter : DEFAULTS.receiptFooter,
+    supportContact: typeof raw.supportContact === "string" ? raw.supportContact : DEFAULTS.supportContact,
+    roundingIncrement,
   };
 }
 
@@ -256,4 +280,14 @@ export function parseRateInput(raw: unknown): number | null {
 export function formatRatePercent(rate: number): string {
   if (!Number.isFinite(rate)) return "";
   return String(Math.round(rate * 1000) / 10);
+}
+
+/**
+ * Round a cash total to the venue's rounding increment (Swiss/cash rounding).
+ * 0 increment = exact. Ledger math stays exact — this applies to cash
+ * tendered and change only, never to cards.
+ */
+export function roundCash(total: number, increment: number): number {
+  if (!Number.isFinite(total) || !Number.isFinite(increment) || increment <= 0) return total;
+  return Math.round(total / increment) * increment;
 }

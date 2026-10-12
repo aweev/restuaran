@@ -23,7 +23,7 @@ import { printReceipt } from "@/components/pos/receipt"
 import { printHtml } from "@/lib/print"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { getVenueSettings } from "@/lib/settings"
+import { getVenueSettings, roundCash } from "@/lib/settings"
 import { useCart } from "@/context/CartContext"
 import type { MenuItem } from "@/types"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
@@ -133,6 +133,7 @@ export default function OrderDetailsPage() {
       })
       .catch(() => null)
     return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ask, order?.id])
 
   const gratuityRate = getVenueSettings().gratuityRate
@@ -384,7 +385,9 @@ export default function OrderDetailsPage() {
     }
   }
 
-  const changeDue = cashTendered ? (Number(cashTendered) || 0) - (order?.total ?? 0) : null
+  const roundingIncrement = getVenueSettings().roundingIncrement
+  const changeDue = cashTendered ? (Number(cashTendered) || 0) - roundCash(order?.total ?? 0, roundingIncrement) : null
+  const cashRounded = roundCash(order?.total ?? 0, roundingIncrement)
 
   // Thermal receipt via the single print path (lib/print.ts): queued job with
   // retry when the popup is blocked. Same payload a future ESC/POS transport
@@ -410,7 +413,8 @@ export default function OrderDetailsPage() {
       `<div class="total-row"><span>Subtotal:</span><span>$${order.subtotal.toFixed(2)}</span></div>` +
       `<div class="total-row"><span>Tax:</span><span>$${order.tax.toFixed(2)}</span></div>` +
       (order.discount > 0 ? `<div class="total-row"><span>Discount:</span><span>-$${order.discount.toFixed(2)}</span></div>` : "") +
-      `<div class="total-row" style="font-weight: bold"><span>Total:</span><span>$${order.total.toFixed(2)}</span></div></div>` +
+      `<div class="total-row" style="font-weight: bold"><span>Total:</span><span>$${order.total.toFixed(2)}</span></div>` +
+      (cashRounded !== order.total ? `<div class="total-row"><span>Cash rounded:</span><span>$${cashRounded.toFixed(2)}</span></div>` : "") + `</div>` +
       payments +
       `<div class="footer"><p>Thank you for your order!</p></div></div>`
     const { ok, jobId } = await printHtml(`Order ${order.id.substring(0, 8)}`, html)
@@ -785,10 +789,17 @@ export default function OrderDetailsPage() {
                   <CardTitle>Change due</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
+                  {cashRounded !== order.total && (
+                    <p className="rounded-md border px-3 py-2 text-sm" role="status">
+                      Cash total (rounded to nearest {roundingIncrement.toFixed(2)}):{" "}
+                      <strong className="tabular-nums">${cashRounded.toFixed(2)}</strong>{" "}
+                      <span className="text-muted-foreground">(exact ${order.total.toFixed(2)} — cards stay exact)</span>
+                    </p>
+                  )}
                   <div className="flex items-end gap-2">
                     <div>
                       <Label htmlFor="cash-tendered">Cash tendered</Label>
-                      <Input id="cash-tendered" type="number" min={0} step={0.01} value={cashTendered} onChange={(e) => setCashTendered(e.target.value)} className="w-32" placeholder={order.total.toFixed(2)} />
+                      <Input id="cash-tendered" type="number" min={0} step={0.01} value={cashTendered} onChange={(e) => setCashTendered(e.target.value)} className="h-11 w-32" placeholder={cashRounded.toFixed(2)} />
                     </div>
                     {changeDue !== null && (
                       <p className="text-sm font-semibold" aria-live="polite">

@@ -58,17 +58,27 @@ function SettingsForm() {
     slaMinutes: 20,
     gratuityRate: 0,
     hours: "",
+    printerEndpoint: "",
+    receiptFooter: "Thank you — come again!",
+    supportContact: "",
+    roundingIncrement: 0,
   });
   const [modules, setModules] = useState<Record<ModuleKey, boolean>>(() => getEnabledModules());
   const [solo, setSolo] = useState(false);
   const [saving, setSaving] = useState(false);
   const [taxInput, setTaxInput] = useState<string | null>(null);
   const [gratInput, setGratInput] = useState<string | null>(null);
+  const [fleet, setFleet] = useState<Array<{ deviceId: string; label: string | null; appVersion: string; role: string | null; lastSeen: string }>>([]);
+  const currentBuild = process.env.NEXT_PUBLIC_APP_VERSION || "dev";
 
   useEffect(() => {
     setStore(getVenueSettings());
     setModules(getEnabledModules());
     setSolo(getSoloMode());
+    fetch("/api/fleet", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows) => setFleet(Array.isArray(rows) ? rows : []))
+      .catch(() => null);
   }, []);
 
   const toggle = (k: keyof typeof prefs) => setPrefs((p) => ({ ...p, [k]: !p[k] }));
@@ -200,8 +210,27 @@ function SettingsForm() {
                 )}
               </div>
               <div>
+                <Label htmlFor="st-round">Cash rounding</Label>
+                <Select value={String(store.roundingIncrement)} onValueChange={(v) => setStore({ ...store, roundingIncrement: Number(v) })}>
+                  <SelectTrigger id="st-round"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="0">Exact (no rounding)</SelectItem>
+                    <SelectItem value="0.01">Penny (0.01)</SelectItem>
+                    <SelectItem value="0.05">Nickel (0.05)</SelectItem>
+                    <SelectItem value="0.1">Dime (0.10)</SelectItem>
+                    <SelectItem value="0.25">Quarter (0.25)</SelectItem>
+                    <SelectItem value="1">Whole unit (1.00)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="mt-1 text-xs text-muted-foreground">Cash tendered and change only. Cards stay exact; the ledger stays exact.</p>
+              </div>
+              <div>
                 <Label htmlFor="st-hours">Opening hours</Label>
                 <Input id="st-hours" value={store.hours} onChange={(e) => setStore({ ...store, hours: e.target.value })} placeholder="Mon–Sun 11:00–23:00" />
+              </div>
+              <div>
+                <Label htmlFor="st-support">Support contact (shown on login)</Label>
+                <Input id="st-support" value={store.supportContact} onChange={(e) => setStore({ ...store, supportContact: e.target.value })} placeholder="+230 5XXX XXXX — who to call mid-service" />
               </div>
             </CardContent>
           </Card>
@@ -237,9 +266,43 @@ function SettingsForm() {
           <Card>
             <CardHeader>
               <CardTitle>Devices & alerts</CardTitle>
-              <CardDescription>Sound, vibration and kitchen display behaviour.</CardDescription>
+              <CardDescription>Sound, vibration, kitchen display behaviour — and where receipts print.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              <div>
+                <Label htmlFor="st-printer">LAN print-service endpoint (optional)</Label>
+                <Input id="st-printer" value={store.printerEndpoint} onChange={(e) => setStore({ ...store, printerEndpoint: e.target.value.trim() })} placeholder="http://192.168.1.50:9100/print" inputMode="url" />
+                <p className="mt-1 text-xs text-muted-foreground">POSTs {"{title, html}"} per receipt. Empty = browser print dialog (thermal driver on the tablet).</p>
+              </div>
+              <div>
+                <Label htmlFor="st-footer">Receipt footer</Label>
+                <Input id="st-footer" value={store.receiptFooter} onChange={(e) => setStore({ ...store, receiptFooter: e.target.value })} placeholder="Thank you — come again!" />
+              </div>
+              <Separator />
+              <div>
+                <p className="text-sm font-medium">Tablet fleet ({fleet.length})</p>
+                <p className="text-xs text-muted-foreground">This build: <code>{currentBuild}</code>. Stale or silent &gt;24h devices need a relaunch before Friday service.</p>
+                {fleet.length === 0 ? (
+                  <p className="mt-2 text-xs text-muted-foreground">No heartbeats yet — devices report while signed in.</p>
+                ) : (
+                  <ul className="mt-2 space-y-1">
+                    {fleet.slice(0, 20).map((d) => {
+                      const seen = Date.parse(d.lastSeen);
+                      const silentH = Number.isFinite(seen) ? (Date.now() - seen) / 3600000 : 99;
+                      const stale = d.appVersion !== currentBuild || silentH > 24;
+                      return (
+                        <li key={d.deviceId} className="flex flex-wrap justify-between gap-2 rounded-md border px-3 py-1.5 text-xs">
+                          <span className="font-mono">{d.deviceId.slice(0, 8)} · {d.label || "?"} · {d.role || "?"}</span>
+                          <span className={stale ? "font-semibold text-destructive" : "text-emerald-600"}>
+                            {d.appVersion}{stale ? " — update" : " ✓"}{silentH > 24 ? " · silent" : ""}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+              <Separator />
               {([["sound", "Success chime", "Short tone on payment & bump"], ["haptics", "Haptic feedback", "Vibrate on key actions (mobile)"], ["kdsAuto", "Auto-advance KDS", "Move bumped tickets to done"], ["offline", "Offline queue", "Keep selling when the network drops"]] as const).map(([k, t, d]) => (
                 <div key={k} className="flex items-center justify-between gap-4">
                   <div>

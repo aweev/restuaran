@@ -2,6 +2,7 @@ import type { UserRole } from "@/types/auth";
 import {
   LayoutDashboard, ShoppingCart, CookingPot, ConciergeBell, CalendarCheck,
   Package, BarChart3, Users, Settings, UtensilsCrossed, QrCode, Wallet,
+  ScrollText,
   type LucideIcon,
 } from "lucide-react";
 
@@ -194,13 +195,12 @@ export const NAV_META: Record<string, { title: string; href: string; icon: Lucid
   kitchen: { title: "Kitchen", href: "/dashboard/kitchen", icon: CookingPot, permission: "order:view", kbd: "G K" },
   kds: { title: "KDS display", href: "/dashboard/kitchen/display", icon: CookingPot, permission: "order:view" },
   inventory: { title: "Inventory", href: "/dashboard/inventory", icon: Package, permission: "inventory:view", kbd: "G I" },
-  giftCards: { title: "Gift Cards", href: "/dashboard/gift-cards", icon: Wallet, permission: "giftcard:view" },
-  multiVenue: { title: "Multi-Venue", href: "/dashboard/multi-venue", icon: LayoutDashboard, permission: "venue:view" },
   reports: { title: "Reports", href: "/dashboard/reports", icon: Wallet, permission: "report:view" },
-  analytics: { title: "Analytics", href: "/dashboard/analytics", icon: BarChart3, permission: "report:view" },
   staff: { title: "Staff", href: "/dashboard/staff", icon: Users, permission: "user:view" },
   cash: { title: "Cash drawer", href: "/dashboard/cash", icon: Wallet, permission: "order:pay" },
   zReport: { title: "Z-report", href: "/dashboard/reports/z-report", icon: BarChart3, permission: "report:view" },
+  audit: { title: "Audit log", href: "/dashboard/audit", icon: ScrollText, permission: "audit:view" },
+  diagnostics: { title: "Diagnostics", href: "/dashboard/diagnostics", icon: Settings, permission: "audit:view" },
   customers: { title: "Customers", href: "/dashboard/customers", icon: Users, permission: "customer:view" },
   settings: { title: "Settings", href: "/dashboard/settings", icon: Settings, permission: "settings:view", kbd: "G S" },
 };
@@ -220,4 +220,27 @@ export function canSeeNav(
   if (!meta?.permission) return true;
   if (!permissions || permissions.length === 0) return false;
   return permissions.includes(meta.permission);
+}
+
+/**
+ * First screen after sign-in, per role. Cooks land on the KDS wall, cashiers
+ * on the drawer, servers on the floor — nobody hunts through the dashboard.
+ */
+export function roleLanding(role: string | undefined | null): string {
+  switch ((role ?? "").toLowerCase()) {
+    case "kitchen":
+      return "/dashboard/kitchen/display";
+    case "cashier":
+    case "staff":
+      return "/dashboard/cash";
+    case "server":
+    case "waiter":
+    case "host":
+    case "host_staff":
+      return "/dashboard/tables";
+    case "bartender":
+      return "/dashboard/orders";
+    default:
+      return "/dashboard";
+  }
 }
