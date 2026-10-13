@@ -1,0 +1,89 @@
+name: Nightly backup
+
+# The till is the event store in Postgres. This workflow takes a nightly
+# custom-format dump, keeps 14 days of artifacts, and every Sunday restores
+# the newest dump into a throwaway database and sanity-checks it (event log
+# present, app tables present). Alert on red: backups are the audit trail.
+#
+# Required repository secret: BACKUP_DATABASE_URL (read-only connection
+# string is enough for pg_dump).
+
+on:
+  schedule:
+    - cron: "30 2 * * *" # nightly dump
+    - cron: "30 3 * * 0" # Sunday restore-verify
+  workflow_dispatch:
+
+env:
+  RETENTION_DAYS: 14
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install postgres client
+        run: sudo apt-get update -y && sudo apt-get install -y postgresql-client-16
+
+      - name: Dump database
+        env:
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+        run: |
+          if [ -z "$BACKUP_DATABASE_URL" ]; then
+            echo "::error::BACKUP_DATABASE_URL secret is not set — nightly backup skipped and failing loudly."
+            exit 1
+          fi
+          FILE="ros-$(date +%F).dump"
+          pg_dump "$BACKUP_DATABASE_URL" -Fc -f "$FILE"
+          ls -la "$FILE"
+          echo "DUMP_FILE=$FILE" >> "$GITHUB_ENV"
+
+      - name: Upload dump
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DUMP_FILE }}
+          path: ${{ env.DUMP_FILE }}
+          retention-days: ${{ env.RETENTION_DAYS }}
+
+  verify:
+    runs-on: ubuntu-latest
+    needs: dump
+    # Weekly deep check: restore the dump and prove the money is in it.
+    # Runs on the Sunday schedule (or manual dispatch); nightly dump-only runs skip it.
+    if: github.event.schedule == '30 3 * * 0' || github.event_name == 'workflow_dispatch'
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: verify
+          POSTGRES_DB: ros_verify
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Install postgres client
+        run: sudo apt-get update -y && sudo apt-get install -y postgresql-client-16
+
+      - name: Download latest dump
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ros-*.dump
+          merge-multiple: true
+
+      - name: Restore and sanity-check
+        env:
+          PGPASSWORD: verify
+        run: |
+          DUMP=$(ls -t ros-*.dump | head -1)
+          echo "Restoring $DUMP"
+          pg_restore -h localhost -U postgres -d ros_verify "$DUMP"
+          EVENTS=$(psql -h localhost -U postgres -d ros_verify -tAc "SELECT count(*) FROM ros_events")
+          IDEM=$(psql -h localhost -U postgres -d ros_verify -tAc "SELECT count(*) FROM kernel_idempotency")
+          AUDIT=$(psql -h localhost -U postgres -d ros_verify -tAc 'SELECT count(*) FROM "AuditLog"')
+          echo "ros_events=$EVENTS kernel_idempotency=$IDEM AuditLog=$AUDIT"
+          # A venue that has served a single table has events; a dump with an
+          # empty event log restores fine but is worth a human look.
+          if [ "$EVENTS" -eq 0 ]; then echo "::warning::Restored dump has zero events — expected for a fresh venue, suspicious otherwise."; fi
