@@ -44,7 +44,8 @@ interface OrderContextType {
   addPayment: (orderId: string, payment: Payment) => Promise<void>
   updateOrderItems: (orderId: string, items: CartItem[]) => Promise<void>
   updateOrderNotes: (orderId: string, notes: string) => Promise<void>
-  cancelOrder: (orderId: string) => Promise<void>
+  cancelOrder: (orderId: string, reason?: string) => Promise<void>
+  refundOrder: (orderId: string, amount: number, reason: string) => Promise<void>
   mergeOrders: (targetTable: Table, sourceTableIds: string[]) => Promise<number>
   transferOrderTable: (sourceTableId: string, targetTable: Table) => Promise<number>
 }
@@ -64,7 +65,7 @@ const OrderContext = createContext<OrderContextType | undefined>(undefined)
  */
 export const OrderProvider = ({ children }: { children: ReactNode }) => {
   const { state: authState } = useAuth()
-  const { state: board } = useProjection<OrderBoardState>("orders.board", 1500)
+  const { state: board } = useProjection<OrderBoardState>("orders.board", 4000)
   const { run } = useCommand()
   const { ask } = useKernel()
   const { notify } = useFeedback()
@@ -377,6 +378,10 @@ export const OrderProvider = ({ children }: { children: ReactNode }) => {
             reject("Payment rejected", result.error, "order.recordPayment", { orderId }, (result as { suggestedActions?: SuggestedAction[] }).suggestedActions)
             throw new Error(result.error?.message ?? "Payment rejected")
           }
+          // Auto-close when fully paid: close is a separate, audited command
+          // (ORDER_UNPAID if partial — ignored, the balance stays open).
+          const closed = await run("order.close", { orderId })
+          if (closed.success) notify("success", "Paid — check closed")
           return Promise.resolve()
         } catch (error) {
           return Promise.reject(error instanceof Error ? error.message : "Failed to add payment")
@@ -425,9 +430,10 @@ export const OrderProvider = ({ children }: { children: ReactNode }) => {
         }
       },
 
-      cancelOrder: async (orderId: string) => {
+      cancelOrder: async (orderId: string, reason?: string) => {
         try {
-          const result = await runWithConflict("order.void", { orderId, reason: "cancelled from POS" })
+          const r = (reason ?? "").trim() || "cancelled from POS"
+          const result = await runWithConflict("order.void", { orderId, reason: r })
           if (!result.success) {
             if (result.error?.code === "VERSION_CONFLICT") throw new Error(result.error?.message ?? "Order changed by another device");
             reject("Cancel failed", result.error, "order.void", { orderId }, (result as { suggestedActions?: SuggestedAction[] }).suggestedActions); throw new Error(result.error?.message ?? "Cancel rejected");
@@ -436,6 +442,31 @@ export const OrderProvider = ({ children }: { children: ReactNode }) => {
           return Promise.resolve()
         } catch (error) {
           return Promise.reject(error instanceof Error ? error.message : "Failed to cancel order")
+        }
+      },
+
+      // Cash refund for a settled order: pays out of the OPEN drawer session
+      // with the order id in the reason, so the money-out is audited against
+      // the drawer. Requires order:pay (cash.payout) — managers/cashiers only.
+      refundOrder: async (orderId: string, amount: number, reason: string) => {
+        try {
+          const r = reason.trim()
+          if (!Number.isFinite(amount) || amount <= 0) throw new Error("Refund amount must be positive")
+          if (!r) throw new Error("A refund reason is required")
+          // Open session via the cash.board projection (server truth).
+          const res = await fetch("/api/kernel?projection=cash.board", { credentials: "include" }).then((x) => x.json()).catch(() => null)
+          const currentId = res?.state?.currentId as string | undefined
+          if (!currentId) throw new Error("Open the cash drawer first — refunds pay out of the drawer")
+          const result = await run("cash.payout", {
+            sessionId: currentId,
+            amount,
+            reason: `refund ${orderId}: ${r}`,
+          })
+          if (!result.success) throw new Error(result.error?.message ?? "Refund rejected")
+          notify("success", "Refund recorded", `Paid out $${amount.toFixed(2)} from drawer`)
+          return Promise.resolve()
+        } catch (error) {
+          return Promise.reject(error instanceof Error ? error.message : "Failed to record refund")
         }
       },
 

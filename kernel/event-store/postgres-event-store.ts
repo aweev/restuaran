@@ -15,6 +15,18 @@ type SqlClient = {
 const EVENT_COLUMNS = `global_position, event_id, org_id, venue_id, zone_id, aggregate_type,
             aggregate_id, aggregate_version, event_type, occurred_at, actor, payload, metadata`
 
+/** Wire drivers differ: Neon parses jsonb to objects, postgres.js over a
+ *  pooler may hand back text. Parse defensively so replay never spreads a
+ *  JSON string into aggregate state. */
+function parseJson(value: unknown): unknown {
+  if (typeof value !== "string") return value
+  try {
+    return JSON.parse(value)
+  } catch {
+    return value
+  }
+}
+
 function rowToEvent(row: Record<string, unknown>): StoredEvent {
   const tenant: TenantContext =
     (row.tenant as TenantContext | undefined) ??
@@ -30,10 +42,10 @@ function rowToEvent(row: Record<string, unknown>): StoredEvent {
     aggregateId: String(row.aggregate_id),
     aggregateVersion: Number(row.aggregate_version),
     tenant,
-    actor: (row.actor as DomainEvent["actor"]) ?? undefined,
-    occurredAt: String(row.occurred_at),
-    payload: row.payload as AttributeBag,
-    metadata: row.metadata as DomainEvent["metadata"],
+    actor: (parseJson(row.actor) as DomainEvent["actor"]) ?? undefined,
+    occurredAt: row.occurred_at instanceof Date ? row.occurred_at.toISOString() : String(row.occurred_at),
+    payload: (parseJson(row.payload) ?? {}) as AttributeBag,
+    metadata: parseJson(row.metadata) as DomainEvent["metadata"],
     globalPosition: Number(row.global_position),
   }
 }
@@ -85,7 +97,10 @@ export class PostgresEventStore implements EventStore {
         JSON.stringify(e.payload),
         JSON.stringify(e.metadata)
       )
-      placeholders.push(`($${base},${base + 1},${base + 2},${base + 3},${base + 4},${base + 5},${base + 6},${base + 7},${base + 8},${base + 9},${base + 10},${base + 11})`)
+      // Explicit casts: wire-protocol drivers (postgres.js, pg) send params as
+      // text/unknown, and the VALUES-list CTE would otherwise resolve uuid /
+      // jsonb / timestamptz columns as text (error 42804). Harmless on Neon.
+      placeholders.push(`($${base}::uuid,$${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6}::int,$${base + 7},$${base + 8}::timestamptz,$${base + 9}::jsonb,$${base + 10}::jsonb,$${base + 11}::jsonb)`)
     }
 
     const sql = `WITH guard AS (
@@ -279,7 +294,7 @@ SELECT global_position, aggregate_version FROM ins`
     await this.db.unsafe(
       `INSERT INTO ros_snapshots
          (org_id, venue_id, aggregate_type, aggregate_id, version, snapshot_schema_version, state, taken_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       VALUES ($1,$2,$3,$4,$5::int,$6::int,$7::jsonb,$8::timestamptz)
        ON CONFLICT (org_id, venue_id, aggregate_type, aggregate_id)
        DO UPDATE SET version = EXCLUDED.version, snapshot_schema_version = EXCLUDED.snapshot_schema_version,
                      state = EXCLUDED.state, taken_at = EXCLUDED.taken_at`,
@@ -310,8 +325,8 @@ SELECT global_position, aggregate_version FROM ins`
       tenant,
       version: Number(row.version),
       snapshotSchemaVersion: Number(row.snapshot_schema_version ?? 1),
-      state: row.state as AttributeBag,
-      takenAt: String(row.taken_at),
+      state: (parseJson(row.state) ?? {}) as AttributeBag,
+      takenAt: row.taken_at instanceof Date ? row.taken_at.toISOString() : String(row.taken_at),
     } satisfies AggregateSnapshot
   }
 

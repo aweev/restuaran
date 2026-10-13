@@ -3,7 +3,6 @@
 import type React from "react"
 
 import { useState } from "react"
-import { useRouter } from "next/navigation"
 import { useAuth } from "@/context/AuthContext"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -16,10 +15,11 @@ interface LoginFormProps {
 }
 
 export function LoginForm({ onError }: LoginFormProps) {
-  const { login } = useAuth()
-  const router = useRouter()
+  const { login, loginWithPin } = useAuth()
+  const [mode, setMode] = useState<"password" | "pin">("password")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [pin, setPin] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -27,8 +27,9 @@ export function LoginForm({ onError }: LoginFormProps) {
     setIsSubmitting(true)
 
     try {
-      await login({ email, password })
-      router.push("/dashboard")
+      // login()/loginWithPin() navigate to the role landing page themselves.
+      if (mode === "pin") await loginWithPin({ email, pin })
+      else await login({ email, password })
     } catch (error) {
       console.error("Login error:", error)
       if (onError) {
@@ -43,7 +44,9 @@ export function LoginForm({ onError }: LoginFormProps) {
     <Card className="w-full shadow-lg">
       <CardHeader className="space-y-1">
         <CardTitle className="text-2xl font-bold">Sign in</CardTitle>
-        <CardDescription>Enter your credentials to access your account</CardDescription>
+        <CardDescription>
+          {mode === "pin" ? "Shared device? Use your staff email + PIN." : "Enter your credentials to access your account"}
+        </CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -60,21 +63,40 @@ export function LoginForm({ onError }: LoginFormProps) {
             />
           </div>
 
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="password">Password</Label>
+          {mode === "pin" ? (
+            <div className="space-y-2">
+              <Label htmlFor="pin">PIN (4–6 digits)</Label>
+              <Input
+                id="pin"
+                type="password"
+                inputMode="numeric"
+                pattern="[0-9]{4,6}"
+                maxLength={6}
+                placeholder="••••"
+                value={pin}
+                onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                required
+                autoComplete="off"
+              />
+              <p className="text-xs text-muted-foreground">Ask a manager to set your PIN. 5 wrong tries lock it for 15 minutes.</p>
             </div>
-            <Input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              autoComplete="current-password"
-            />
-          </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="password">Password</Label>
+              </div>
+              <Input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                autoComplete="current-password"
+              />
+            </div>
+          )}
 
-          <Button type="submit" className="w-full" disabled={isSubmitting}>
+          <Button type="submit" className="w-full text-lg" size="lg" disabled={isSubmitting}>
             {isSubmitting ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Signing in...
@@ -82,6 +104,14 @@ export function LoginForm({ onError }: LoginFormProps) {
             ) : (
               "Sign in"
             )}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            className="w-full"
+            onClick={() => setMode((m) => (m === "pin" ? "password" : "pin"))}
+          >
+            {mode === "pin" ? "Use password instead" : "Use fast PIN instead"}
           </Button>
         </form>
       </CardContent>

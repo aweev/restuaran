@@ -84,12 +84,21 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
   async get(requestId: string): Promise<CommandResult | null> {
     const rows = await this.db.unsafe(`SELECT result FROM kernel_idempotency WHERE request_id = $1`, [requestId])
     if (rows.length === 0) return null
-    return (rows[0].result ?? rows[0].Result ?? null) as unknown as CommandResult | null
+    const raw = (rows[0].result ?? rows[0].Result ?? null) as unknown
+    // Wire drivers differ: some parse jsonb to objects, others hand back text.
+    if (typeof raw === "string") {
+      try {
+        return JSON.parse(raw) as CommandResult
+      } catch {
+        return null
+      }
+    }
+    return (raw ?? null) as CommandResult | null
   }
   async set(requestId: string, result: CommandResult): Promise<void> {
     await this.db.unsafe(
       `INSERT INTO kernel_idempotency (request_id, result, created_at)
-       VALUES ($1, $2, NOW())
+       VALUES ($1, $2::jsonb, NOW())
        ON CONFLICT (request_id) DO NOTHING`,
       [requestId, JSON.stringify(result)],
     )

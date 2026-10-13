@@ -1,14 +1,22 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { LoginForm } from "@/components/auth/login-form";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { AlertCircle, Flame, Keyboard } from "lucide-react";
+import { AlertCircle, Flame, Keyboard, LifeBuoy } from "lucide-react";
+import { getVenueSettings } from "@/lib/settings";
+
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || "dev";
 
 export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
+  const [support, setSupport] = useState("");
+
+  useEffect(() => {
+    setSupport(getVenueSettings().supportContact || "");
+  }, []);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-b from-background to-muted/60 px-4 py-12 sm:px-6 lg:px-8 pos-fade-in">
@@ -43,13 +51,20 @@ export default function LoginPage() {
           <p className="inline-flex items-center gap-1.5">
             <Keyboard className="h-3.5 w-3.5" /> Press Ctrl+K anywhere to jump between screens
           </p>
+          <p className="inline-flex items-center gap-1.5">
+            <LifeBuoy className="h-3.5 w-3.5" />
+            {support ? (
+              <span>Stuck mid-service? Call <span className="font-medium text-foreground">{support}</span></span>
+            ) : (
+              <span>Stuck mid-service? Ask a manager — the support number lives in Settings.</span>
+            )}
+          </p>
           <p>
             New here? <Link href="/register" className="underline underline-offset-2">Create an account</Link>
             {" · "}
             <Link href="/forgot-password" className="underline underline-offset-2">Forgot password?</Link>
-            {" · "}
-            <Link href="/customer/menu" className="underline underline-offset-2">Guest menu</Link>
           </p>
+          <p className="text-[11px] opacity-70">Restaurant OS · build {APP_VERSION}</p>
         </div>
       </div>
     </div>

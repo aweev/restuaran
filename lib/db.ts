@@ -80,10 +80,15 @@ interface ConnectionErrorLike {
   message?: string
 }
 
-// Dev-only resilience: with no local database running, degrade to empty data so
-// the app boots. NEVER do this in production — an outage would be misread as
-// empty results (phantom not-found errors, spurious version conflicts).
+// Dev-only resilience: with no DATABASE_URL configured and no local database,
+// degrade reads to empty data so the app boots. When DATABASE_URL IS set, a
+// connection failure is an outage — never mask it as empty (that hides lost
+// orders and causes phantom not-founds). Writes always throw via strictSql.
 function swallowIfDev(err: unknown): SqlRow[] {
+  // Only swallow when no DATABASE_URL is configured (true local dev without
+  // a database). If DATABASE_URL exists, the operator expects data — rethrow.
+  const dbConfigured = Boolean(process.env.DATABASE_URL)
+  if (dbConfigured) throw err
   const connectionError = err as ConnectionErrorLike
   const connectionDown =
     connectionError?.code === "ECONNREFUSED" ||

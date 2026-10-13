@@ -109,24 +109,14 @@ export function WaitListProvider({ children }: { children: React.ReactNode }) {
     [run],
   )
 
-  // Notify customer
+  // Notify customer (kernel waitlist.notify holds the notified state; there is
+  // no SMS route — texts go out manually until a provider is wired).
   const notifyCustomer = useCallback(
     async (id: string) => {
       const result = await run("waitlist.notify", { entryId: id })
       if (!result.success) fail(result, "Failed to notify customer")
-      // SMS is best-effort and credential-gated server-side; a failed text
-      // must not un-notify the guest or alarm the host with a second error.
-      try {
-        await fetch(`/api/waitlist/${id}/sms`, {
-          method: "POST",
-          headers: authState.accessToken ? { Authorization: `Bearer ${authState.accessToken}` } : {},
-          credentials: "include",
-        })
-      } catch {
-        /* notified state already holds; SMS retries from the entry */
-      }
     },
-    [run, authState.accessToken],
+    [run],
   )
 
   // Seat customer

@@ -121,6 +121,7 @@ const recordPayment = handler<AttributeBag>("order.recordPayment", "order:pay", 
       method: str(cmd.payload.method),
       amount: num(cmd.payload.amount),
       gateway: cmd.payload.gateway ? str(cmd.payload.gateway) : undefined,
+      splitIndex: cmd.payload.splitIndex != null ? num(cmd.payload.splitIndex) : null,
     })
   )
   return ok(cmd, orderId, committed)

@@ -12,6 +12,7 @@ import { VenueAggregate } from "./venue.aggregate"
 import { CustomerAggregate } from "./customer.aggregate"
 import { GiftCardAggregate } from "./gift-card.aggregate"
 import { PromotionAggregate } from "./promotion.aggregate"
+import { CashDrawerAggregate } from "./cash-drawer.aggregate"
 import { registerAggregate } from "./registry"
 
 registerAggregate(OrderAggregate.TYPE, OrderAggregate)
@@ -31,6 +32,7 @@ registerAggregate(VenueAggregate.TYPE, VenueAggregate)
 registerAggregate(CustomerAggregate.TYPE, CustomerAggregate)
 registerAggregate(GiftCardAggregate.TYPE, GiftCardAggregate)
 registerAggregate(PromotionAggregate.TYPE, PromotionAggregate)
+registerAggregate(CashDrawerAggregate.TYPE, CashDrawerAggregate)
 
 export {
   OrderAggregate,
@@ -47,6 +49,7 @@ export {
   CustomerAggregate,
   GiftCardAggregate,
   PromotionAggregate,
+  CashDrawerAggregate,
 }
 export { platformOrderId } from "./platform-order.aggregate"
 export type { PlatformOrderState } from "./platform-order.aggregate"

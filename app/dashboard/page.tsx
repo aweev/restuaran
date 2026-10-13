@@ -16,11 +16,8 @@ import { SalesChart } from "@/components/dashboard/sales-chart";
 import { PageHeader, LoadingGrid, EmptyState, ErrorState, QuickActions } from "@/components/pos/ui-states";
 import { personaFor } from "@/lib/personas";
 import { PriorityInbox } from "@/components/dashboard/priority-inbox";
-import { SetupChecklist } from "@/components/dashboard/setup-checklist";
 import { getVenueSettings } from "@/lib/settings";
-import { useTour } from "@/components/guided-tour/tour-provider";
 import { useFeedback } from "@/lib/feedback";
-import { useRouter } from "next/navigation";
 import {
   ShoppingCart, ConciergeBell, CookingPot, CalendarCheck, Package,
   TrendingUp, Receipt, Clock,
@@ -44,8 +41,6 @@ export default function DashboardPage() {
   const { state: orderState, fetchOrders } = useOrder();
   const { state: tableState, fetchTables } = useTable();
   const { notify } = useFeedback();
-  const { startTour } = useTour();
-  const router = useRouter();
   const [booted, setBooted] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [venueName, setVenueName] = useState<string | null>(null);
@@ -57,10 +52,6 @@ export default function DashboardPage() {
     const name = authState.user?.name?.split(" ")[0];
     return name ? `${part}, ${name}` : `${part}`;
   }, [authState.user?.name]);
-
-  // Check if venue is configured - if not, redirect to setup (unless already there)
-  const setupProgress = getVenueSettings();
-  const isVenueConfigured = setupProgress.name?.trim() && setupProgress.taxRate > 0 && setupProgress.tables > 0;
 
   const load = async () => {
     setLoadError(null);
@@ -75,10 +66,6 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (authState.isAuthenticated) {
-      if (!isVenueConfigured && !window.location.pathname.includes("/setup")) {
-        router.push("/dashboard/setup");
-        return;
-      }
       load();
     } else if (!authState.loading) {
       setBooted(true);
@@ -88,22 +75,8 @@ export default function DashboardPage() {
 
   useEffect(() => {
     setVenueName(getVenueSettings().name || null);
-    // First visit per role: auto-start the dashboard tour once.
-    try {
-      const role = authState.user?.role ?? "unknown";
-      const key = `pos.tour.seen.dashboard.${role}`;
-      if (booted && !window.localStorage.getItem(key)) {
-        window.localStorage.setItem(key, "1");
-        // Defer so tour targets are mounted.
-        const t = setTimeout(() => startTour("dashboard"), 600);
-        return () => clearTimeout(t);
-      }
-    } catch {
-      /* ignore */
-    }
     return undefined;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [booted, authState.user?.role]);
+  }, []);
 
   const loading = !booted || menuState.loading || orderState.loading || tableState.loading;
   const live = booted && !loadError && !orderState.error && (orderState.orders.length > 0 || tableState.tables.length > 0);
@@ -174,11 +147,9 @@ export default function DashboardPage() {
 
       {venueName === "" && (
         <div role="alert" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm">
-          No venue configured yet. <Link className="font-medium underline" href="/dashboard/setup">Complete setup</Link> to name your venue, set tax and add tables.
+          No venue configured yet. <Link className="font-medium underline" href="/dashboard/settings">Name your venue and set tax in Settings</Link>.
         </div>
       )}
-
-      <SetupChecklist />
 
       <PriorityInbox />
 

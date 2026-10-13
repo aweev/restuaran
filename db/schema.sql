@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS "User" (
   name               TEXT NOT NULL,
   email              TEXT NOT NULL,
   password           TEXT NOT NULL,
-  -- Roles: admin, manager, host, waiter, cashier, bartender, kitchen, delivery
+  -- Roles: admin, manager, owner, server, waiter, host, host_staff, cashier, bartender, delivery, kitchen, staff
   role               TEXT NOT NULL DEFAULT 'staff',
   avatar             TEXT,
   phone              TEXT,
@@ -68,8 +68,17 @@ CREATE TABLE IF NOT EXISTS "User" (
   "lastLogin"        TIMESTAMPTZ,
   customPermissions  TEXT[] NOT NULL DEFAULT '{}',
   "createdAt"        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  "updatedAt"        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  "updatedAt"        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- Fast shared-device login. NULL = no PIN set. Attempts/lockout live here
+  -- (not the kernel) because auth is session infrastructure, not domain state.
+  "pinHash"          TEXT,
+  "pinAttempts"      INTEGER NOT NULL DEFAULT 0,
+  "pinLockedUntil"   TIMESTAMPTZ
 );
+-- Existing deployments: add PIN columns idempotently.
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "pinHash" TEXT;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "pinAttempts" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "pinLockedUntil" TIMESTAMPTZ;
 CREATE UNIQUE INDEX IF NOT EXISTS user_email_key ON "User" (LOWER(email));
 CREATE INDEX IF NOT EXISTS user_role_idx ON "User" (role) WHERE "isActive";
 
@@ -435,3 +444,20 @@ CREATE TABLE IF NOT EXISTS "kernel_idempotency" (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS kernel_idempotency_created_idx ON "kernel_idempotency" (created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Device fleet heartbeat
+-- Every signed-in tablet/phone reports its build + role every few minutes so
+-- a manager can see stale versions in Settings → Devices instead of
+-- discovering them during a failed service.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS "DeviceHeartbeat" (
+  device_id   TEXT PRIMARY KEY,
+  label       TEXT,
+  app_version TEXT NOT NULL DEFAULT 'dev',
+  role        TEXT,
+  user_id     TEXT,
+  last_seen   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS device_heartbeat_seen_idx ON "DeviceHeartbeat" (last_seen DESC);

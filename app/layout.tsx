@@ -1,6 +1,8 @@
 import type React from "react"
 import type { Metadata } from "next"
-import { Inter } from "next/font/google"
+// NOTE: no next/font/google here. The venue network cannot reach Google Fonts
+// and Turbopack's internal font loader breaks the build in that case, so the
+// app uses the system stack via `font-sans` (see --font-sans in globals.css).
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { Toaster as SonnerToaster } from "@/components/ui/sonner"
@@ -17,22 +19,16 @@ import { ReservationProvider } from "@/context/ReservationContext"
 import { WaitListProvider } from "@/context/WaitListContext"
 import { CustomerProvider } from "@/context/CustomerContext"
 import { KitchenProvider } from "@/context/KitchenContext"
-import { GiftCardProvider } from "@/context/GiftCardContext"
 import { VenueProvider } from "@/context/VenueContext"
-// These three were fully implemented and consumed across /dashboard, but never
-// mounted, so every consumer threw at runtime. AnalyticsProvider's missing mount
-// is what actually broke the production build during prerender.
-import { AnalyticsProvider } from "@/context/AnalyticsContext"
+// Inventory + attention were fully implemented and consumed across
+// /dashboard, but never mounted, so every consumer threw at runtime.
 import { InventoryProvider } from "@/context/InventoryContext"
 import { AttentionProvider } from "@/context/AttentionContext"
-import { DragDropProvider } from "@/context/DragDropContext"
-import { CashDrawerProvider } from "@/context/CashDrawerContext"
 import { ConflictProvider } from "@/components/conflict"
 import { AnimationProvider } from "@/components/animation-provider"
-import { TourProvider } from "@/components/guided-tour/tour-provider"
+import { FleetHeartbeat } from "@/components/layout/fleet-heartbeat"
+import { ClientErrorReporter } from "@/components/layout/client-error-reporter"
 import { SWRegistration } from "@/components/sw-registration/SWRegistration"
-
-const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
   title: "Maison Chili POS — Restaurant OS",
@@ -57,14 +53,13 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <link rel="apple-touch-icon" href="/icons/icon-192x192.png" />
       </head>
-      <body className={inter.className}>
+      <body className="font-sans antialiased">
         <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-primary focus:px-3 focus:py-2 focus:text-primary-foreground">
           Skip to content
         </a>
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
           <UiProvider>
           <AnimationProvider>
-            <TourProvider>
               <KernelProvider>
                 <ConflictProvider>
                 <AttentionProvider>
@@ -77,14 +72,12 @@ export default function RootLayout({
                           <WaitListProvider>
                             <CustomerProvider>
                                <KitchenProvider>
-                                 <GiftCardProvider>
-                                   <VenueProvider>
-                                <AnalyticsProvider>
-                                  <InventoryProvider>
-                                    <DragDropProvider>
-                                      <CashDrawerProvider>
+                                 <VenueProvider>
+                                   <InventoryProvider>
                                       <GlobalShortcutsHandler />
                                       <SWRegistration />
+                                      <FleetHeartbeat />
+                                      <ClientErrorReporter />
                                       {children}
                                       {/* Sonner is the single toast surface. The Radix
                                           <Toaster/> that used to be mounted here never
@@ -98,12 +91,8 @@ export default function RootLayout({
                                         duration={4000}
                                         toastOptions={{ className: "font-sans" }}
                                       />
-                                      </CashDrawerProvider>
-                                    </DragDropProvider>
-                                  </InventoryProvider>
-                                </AnalyticsProvider>
+                                   </InventoryProvider>
                                  </VenueProvider>
-                                 </GiftCardProvider>
                                </KitchenProvider>
                             </CustomerProvider>
                           </WaitListProvider>
@@ -116,7 +105,6 @@ export default function RootLayout({
                 </AttentionProvider>
                 </ConflictProvider>
                 </KernelProvider>
-              </TourProvider>
           </AnimationProvider>
           </UiProvider>
         </ThemeProvider>

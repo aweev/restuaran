@@ -6,7 +6,8 @@ import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
 import { Button } from "@/components/ui/button"
-import { Edit, Trash2 } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import { Edit, Trash2, Check, X } from "lucide-react"
 import { useMenu } from "@/context/MenuContext"
 
 interface MenuItemCardProps {
@@ -14,8 +15,10 @@ interface MenuItemCardProps {
 }
 
 export function MenuItemCard({ menuItem }: MenuItemCardProps) {
-  const { updateItemAvailability } = useMenu()
+  const { updateItemAvailability, updateItem } = useMenu()
   const [isUpdating, setIsUpdating] = useState(false)
+  const [editingPrice, setEditingPrice] = useState(false)
+  const [price, setPrice] = useState(menuItem.price.toFixed(2))
 
   const handleAvailabilityChange = async (available: boolean) => {
     setIsUpdating(true)
@@ -23,6 +26,34 @@ export function MenuItemCard({ menuItem }: MenuItemCardProps) {
       await updateItemAvailability(menuItem.id, available)
     } catch (error) {
       console.error("Error updating item availability:", error)
+    } finally {
+      setIsUpdating(false)
+    }
+  }
+
+  const savePrice = async () => {
+    const v = Number(price)
+    if (!Number.isFinite(v) || v < 0) return
+    setIsUpdating(true)
+    try {
+      await updateItem({ ...menuItem, price: Math.round(v * 100) / 100 })
+      setEditingPrice(false)
+    } catch (error) {
+      console.error("Error updating price:", error)
+    } finally {
+      setIsUpdating(false)
+    }
+  }
+
+  // No hard delete from the floor: removing an item 86's it (reversible,
+  // audited) instead of destroying history the reports still need.
+  const remove = async () => {
+    if (!window.confirm(`Remove "${menuItem.title}" from sale? (86'd — reversible)`)) return
+    setIsUpdating(true)
+    try {
+      await updateItemAvailability(menuItem.id, false)
+    } catch (error) {
+      console.error("Error removing item:", error)
     } finally {
       setIsUpdating(false)
     }
@@ -55,7 +86,16 @@ export function MenuItemCard({ menuItem }: MenuItemCardProps) {
       </CardHeader>
       <CardContent className="p-4 pt-2">
         <div className="flex items-center justify-between">
-          <span className="font-bold text-green-600">${menuItem.price.toFixed(2)}</span>
+          {editingPrice ? (
+            <span className="flex items-center gap-1">
+              <span className="font-bold">$</span>
+              <Input type="number" min={0} step={0.01} value={price} onChange={(e) => setPrice(e.target.value)} className="h-8 w-24" aria-label={`Price for ${menuItem.title}`} />
+              <Button variant="ghost" size="sm" disabled={isUpdating} onClick={() => void savePrice()} aria-label="Save price"><Check className="h-4 w-4" /></Button>
+              <Button variant="ghost" size="sm" onClick={() => { setEditingPrice(false); setPrice(menuItem.price.toFixed(2)) }} aria-label="Cancel price edit"><X className="h-4 w-4" /></Button>
+            </span>
+          ) : (
+            <span className="font-bold text-green-600">${menuItem.price.toFixed(2)}</span>
+          )}
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted-foreground">Available</span>
             <Switch checked={menuItem.available} onCheckedChange={handleAvailabilityChange} disabled={isUpdating} />
@@ -63,11 +103,11 @@ export function MenuItemCard({ menuItem }: MenuItemCardProps) {
         </div>
       </CardContent>
       <CardFooter className="flex justify-between p-4 pt-0">
-        <Button variant="outline" size="sm">
-          <Edit className="mr-2 h-4 w-4" /> Edit
+        <Button variant="outline" size="sm" onClick={() => setEditingPrice((e) => !e)}>
+          <Edit className="mr-2 h-4 w-4" /> {editingPrice ? "Close" : "Price"}
         </Button>
-        <Button variant="outline" size="sm" className="text-red-500 hover:text-red-600">
-          <Trash2 className="mr-2 h-4 w-4" /> Delete
+        <Button variant="outline" size="sm" className="text-red-500 hover:text-red-600" disabled={isUpdating} onClick={() => void remove()}>
+          <Trash2 className="mr-2 h-4 w-4" /> Remove
         </Button>
       </CardFooter>
     </Card>

@@ -23,6 +23,7 @@ interface InventoryContextType {
   addIngredient: (ingredient: Ingredient) => Promise<void>
   updateIngredient: (ingredient: Ingredient) => Promise<void>
   updateIngredientStock: (id: string, quantity: number) => Promise<void>
+  recordWastage: (id: string, quantity: number, reason: string) => Promise<void>
   deleteIngredient: (id: string) => Promise<void>
 }
 
@@ -154,6 +155,16 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     [run],
   )
 
+  const recordWastage = useCallback(
+    async (id: string, quantity: number, reason: string) => {
+      if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Waste quantity must be positive")
+      if (!reason.trim()) throw new Error("A waste reason is required")
+      const result = await run("inventory.recordWastage", { itemId: id, quantity, reason: reason.trim() })
+      if (!result.success) reject("Failed to record wastage", result.error)
+    },
+    [run],
+  )
+
   const value = useMemo(
     () => ({
       state,
@@ -161,9 +172,10 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       addIngredient,
       updateIngredient,
       updateIngredientStock,
+      recordWastage,
       deleteIngredient,
     }),
-    [state, fetchInventory, addIngredient, updateIngredient, updateIngredientStock, deleteIngredient],
+    [state, fetchInventory, addIngredient, updateIngredient, updateIngredientStock, recordWastage, deleteIngredient],
   )
 
   return <InventoryContext.Provider value={value}>{children}</InventoryContext.Provider>

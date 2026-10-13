@@ -1,18 +1,26 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { sql } from "@/lib/db"
-import { getTokenFromRequest, verifyJWT } from "@/lib/jwt"
+import { getTokenFromRequest, verifyAccessToken } from "@/lib/jwt"
+import { actorFromAuthPayload } from "@/kernel/tenant/permission-map"
 
 export async function GET(req: NextRequest) {
   try {
-    // Verify authentication
+    // Verify authentication — access tokens only.
     const token = getTokenFromRequest(req)
     if (!token) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const payload = await verifyJWT(token)
+    const payload = await verifyAccessToken(token)
     if (!payload) {
       return NextResponse.json({ error: "Invalid token" }, { status: 401 })
+    }
+
+    // Authorization: any order read requires order:view (or report:view which
+    // maps to it). Legacy role-filtering below is retained for row scoping.
+    const actor = actorFromAuthPayload(payload as never)
+    if (!actor.permissions.includes("order:view")) {
+      return NextResponse.json({ error: "Forbidden: missing order:view" }, { status: 403 })
     }
 
     const { searchParams } = new URL(req.url)

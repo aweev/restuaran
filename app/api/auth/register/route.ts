@@ -8,7 +8,12 @@ const registerSchema = z.object({
   name: z.string().min(3, "Name must be at least 3 characters"),
   email: z.string().email("Invalid email address"),
   password: z.string().min(8, "Password must be at least 8 characters"),
-  role: z.enum(["manager", "host", "waiter", "cashier", "bartender", "kitchen"]),
+  // Full UserRole union (types/auth): the signup form defaults to "server",
+  // which the old short enum rejected with a bare 400.
+  role: z.enum([
+    "admin", "manager", "owner", "server", "waiter", "host", "host_staff",
+    "cashier", "bartender", "delivery", "kitchen", "staff",
+  ]),
   phone: z.string().optional(),
   address: z.string().optional(),
 })

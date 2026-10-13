@@ -258,6 +258,29 @@ const getPayment: QueryHandler = {
   },
 }
 
+/**
+ * Which card provider is live (manual | simulated-stripe | stripe-terminal).
+ * Surfaced so the checkout screen can say so honestly instead of implying
+ * real card processing when there is none.
+ */
+const getPaymentProviderInfo: QueryHandler = {
+  queryType: "get.paymentProvider",
+  requiredPermission: "order:view",
+  async handle() {
+    const name = activeProvider.name
+    return {
+      provider: name,
+      liveCards: name === "stripe-terminal",
+      hint:
+        name === "stripe-terminal"
+          ? "Card terminal connected — follow the reader prompts."
+          : name === "simulated-stripe"
+            ? "SIMULATED cards — no money moves. Flip ROS_PAYMENT_PROVIDER for the real terminal."
+            : "Manual cards — record the slip/reference; no gateway is connected.",
+    }
+  },
+}
+
 export function paymentsModule(): RosModule {
   return {
     id: "ros.payments",
@@ -265,7 +288,7 @@ export function paymentsModule(): RosModule {
     version: "1.0.0",
     capabilities: {
       commands: ["payment.authorize", "payment.capture", "payment.refund", "payment.voidAuth"],
-      queries: ["list.payments", "get.payment"],
+      queries: ["list.payments", "get.payment", "get.paymentProvider"],
       eventTypes: ["payment.authorized", "payment.captured", "payment.refunded", "payment.voided"],
     },
     lifecycle: {
@@ -279,6 +302,7 @@ export function paymentsModule(): RosModule {
         runtime.commands.register(voidAuth)
         runtime.queries.register(listPayments)
         runtime.queries.register(getPayment)
+        runtime.queries.register(getPaymentProviderInfo)
       },
     },
   }

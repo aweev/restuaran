@@ -5,6 +5,17 @@ import { toast } from "sonner"
 
 export function SWRegistration() {
   useEffect(() => {
+    // Never in development: a registered worker pins stale chunks across
+    // server restarts and makes HMR/code fixes appear "not applied".
+    if (process.env.NODE_ENV !== "production") {
+      if ("serviceWorker" in navigator) {
+        void navigator.serviceWorker
+          .getRegistrations()
+          .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+          .catch(() => undefined)
+      }
+      return
+    }
     if ("serviceWorker" in navigator) {
       const registerSW = async () => {
         try {

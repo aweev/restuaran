@@ -25,6 +25,10 @@ export interface SalesBucket {
   paid: number
   /** Sales by channel, so the report can show dine-in vs delivery. */
   byChannel: Record<string, number>
+  /** Settled payments by method (cash/card/…). Server truth for Day Close. */
+  byMethod: Record<string, number>
+  /** Comp events (line + order) counted, so giveaways never hide. */
+  comps: number
   /** Best-selling item id → units. Drives "top sellers". */
   byItem: Record<string, number>
 }
@@ -55,6 +59,8 @@ function emptyBucket(date: string): SalesBucket {
     tips: 0,
     paid: 0,
     byChannel: {},
+    byMethod: {},
+    comps: 0,
     byItem: {},
   };
 }
@@ -82,6 +88,8 @@ export function salesBoardProjection(
         "order.taxApplied",
         "order.paymentRecorded",
         "order.voided",
+        "order.lineComped",
+        "order.comped",
       ],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       reduce: (state: SalesBoardState, event: StoredEvent): SalesBoardState => {
@@ -175,8 +183,15 @@ export function salesBoardProjection(
           case "order.paymentRecorded": {
             bucket.paid = round2(bucket.paid + Number(p.payment?.amount ?? 0));
             bucket.tips = round2(bucket.tips + Number(p.payment?.tip ?? 0));
+            const method = String(p.payment?.method ?? "unknown").toLowerCase();
+            bucket.byMethod = { ...bucket.byMethod };
+            bucket.byMethod[method] = round2((bucket.byMethod[method] ?? 0) + Number(p.payment?.amount ?? 0));
             break;
           }
+          case "order.lineComped":
+          case "order.comped":
+            bucket.comps += 1;
+            break;
         }
 
         buckets[idx] = bucket;

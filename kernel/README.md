@@ -67,24 +67,19 @@ pos/kernel/
 │   ├── tenant.ts               newTenant, systemActor, assertTenant, tenantFromEnv
 │   └── permission-map.ts       existing RBAC → kernel capabilities
 ├── server/                 Server-side helpers
-│   ├── kernel-singleton.ts     shared getKernel() for /api/kernel + /api/v1
-│   └── api-key.ts              ROS_PUBLIC_API_KEYS auth for the public API
-├── public-api/
-│   └── generate-sdk.ts         collectSurface() + buildSdkSource() (typed client)
+│   └── kernel-singleton.ts     shared getKernel() for /api/kernel
 ├── react/                  Client bridge
 │   └── kernel-provider.tsx     useKernel / useCommand / useProjection (via /api/kernel)
 ├── kernel.ts               Orchestrator: repository, buses, modules, boot/shutdown
 └── index.ts                createKernel() + bootKernel() public entry point
 ```
 
-## Surface after Phase 3
+## Surface (live, not enumerated here)
 
-- **48 commands** (19 core + 7 reservations + 4 waitlist + 6 menu + 5 staff +
-  3 platform + 4 integrations)
-- **17 queries** + **8 projections** (`kitchen.queue`, `tables.board`,
-  `inventory.board`, `reservations.board`, `waitlist.board`, `menu.board`,
-  `platform.orders`, `webhooks.endpoints`)
-- **6 installed modules** visible via `kernel.modules.list()` and `GET /api/kernel`
+Commands, queries, projections and modules grow with the domain — the old
+static counts rotted within weeks. Discover the live surface at runtime via
+`GET /api/kernel` (`audit:view`), or read [`docs/KERNEL-REFERENCE.md`](../docs/KERNEL-REFERENCE.md)
+for the curated reference.
 
 ## How a write flows (unified path)
 
@@ -248,32 +243,13 @@ to a connector transport (logs by default; point at a provider URL in prod):
   `completed`, `platform.orderCancelled` → `cancelled`) — only for
   channel-`platform` orders; POS orders are ignored.
 
-### Public API + generated SDK
+### External access
 
-`app/api/v1/` exposes the kernel to external clients with static API-key auth
-(`ROS_PUBLIC_API_KEYS="key,key2=manager"`; unset → `503 PUBLIC_API_DISABLED`):
-
-- `POST /api/v1/commands` — `{ commandType, payload, requestId? }` → CommandResult (200/422)
-- `GET /api/v1/queries?query=...` or `?projection=...` — QueryResult / projection state
-- `GET /api/v1/meta` — live surface: commands, queries, projections, modules
-
-The typed client is **generated from the live surface** and can never drift:
-
-```bash
-npm run kernel:sdk        # boot throwaway kernel → write sdk/ros-sdk.ts
-npm run kernel:sdk:check  # fail CI when the committed SDK is stale
-```
-
-```ts
-import { RosSdk } from "@/sdk/ros-sdk"
-const sdk = new RosSdk({ baseUrl: "/api/v1", apiKey: process.env.ROS_API_KEY })
-const res = await sdk.platformIngestOrder({ platform: "uber-eats", externalOrderId: "UE-1", items: [...] })
-const board = await sdk.listPlatformOrders<{ rows: unknown[] }>()
-```
-
-The smoke test asserts the committed `sdk/ros-sdk.ts` is byte-identical to a
-fresh regeneration — change the surface without running `kernel:sdk` and it
-fails with a clear message.
+External clients go through the same authenticated surface: `POST /api/kernel`
+(commands, `requestId` idempotent) and `GET /api/kernel?query=…` /
+`?projection=…` (permission-gated reads). The retired `/api/v1` static-key API
+and the generated SDK (`sdk/ros-sdk.ts`, `kernel-sdk.cjs`) were removed with
+the legacy REST cutover — one surface, one auth model, no drift to police.
 
 ### Event compaction job
 

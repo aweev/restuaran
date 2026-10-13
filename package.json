@@ -13,13 +13,10 @@
     "assets:icons": "node scripts/generate-icons.mjs",
     "kernel:typecheck": "tsc -p tsconfig.kernel.json --noEmit",
     "kernel:smoke": "tsc -p tsconfig.kernel.json && node kernel-smoke.cjs",
-    "kernel:sdk": "tsc -p tsconfig.kernel.json && node kernel-sdk.cjs",
-    "kernel:sdk:check": "tsc -p tsconfig.kernel.json && node kernel-sdk.cjs --check",
-    "test:kernel": "tsc -p tsconfig.kernel.json && node --test tests/kernel/order.aggregate.test.mjs tests/kernel/projection-rebuild.test.mjs tests/kernel/idempotency.test.mjs tests/kernel/authz.test.mjs tests/kernel/section-scope.test.mjs tests/kernel/recipe-depletion.test.mjs tests/kernel/venue-tax.test.mjs tests/kernel/recovery.test.mjs tests/kernel/venue-config.test.mjs tests/kernel/permissions.test.mjs tests/kernel/reservation-pii.test.mjs"
+    "test:kernel": "tsc -p tsconfig.kernel.json && node --test tests/kernel/order.aggregate.test.mjs tests/kernel/projection-rebuild.test.mjs tests/kernel/idempotency.test.mjs tests/kernel/authz.test.mjs tests/kernel/section-scope.test.mjs tests/kernel/recipe-depletion.test.mjs tests/kernel/venue-tax.test.mjs tests/kernel/recovery.test.mjs tests/kernel/venue-config.test.mjs tests/kernel/permissions.test.mjs tests/kernel/reservation-pii.test.mjs tests/kernel/cash-drawer.test.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
-    "@hello-pangea/dnd": "^18.0.1",
     "@hookform/resolvers": "^5.0.1",
     "@neondatabase/serverless": "^1.0.0",
     "@radix-ui/react-accordion": "^1.2.10",
@@ -73,7 +70,6 @@
     "next": "15.2.4",
     "next-themes": "^0.4.6",
     "postgres": "^3.4.9",
-    "qrcode.react": "^4.2.0",
     "react": "^19.0.0",
     "react-day-picker": "^9.6.7",
     "react-dom": "^19.0.0",
@@ -85,7 +81,6 @@
     "sonner": "^2.0.3",
     "stripe": "^17.7.0",
     "tailwind-merge": "^3.2.0",
-    "twilio": "^6.1.2",
     "vaul": "^1.1.2",
     "workbox-precaching": "^7.3.0",
     "workbox-routing": "^7.3.0",

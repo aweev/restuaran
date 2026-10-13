@@ -24,9 +24,10 @@ export function getKernel(): Promise<Kernel> {
     const socketEnabled = Boolean(process.env.INTERNAL_EMIT_SECRET)
     globalForKernel.__rosSocketEnabled = socketEnabled
     
-    // Use DB-backed idempotency store in production
-    const isProduction = process.env.NODE_ENV === "production" || process.env.ROS_USE_PG === "1"
-    const idempotency = isProduction && process.env.DATABASE_URL
+    // DB-backed idempotency whenever a database is configured. Never fall
+    // back to silent in-memory dedupe in production — duplicate orders
+    // during a rush are worse than a boot error.
+    const idempotency = process.env.DATABASE_URL
       ? new PostgresIdempotencyStore(sql as never)
       : undefined
 

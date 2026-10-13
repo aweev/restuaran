@@ -53,26 +53,28 @@ export const MenuProvider = ({ children }: { children: ReactNode }) => {
 
   const kernelItems = useMemo(() => menuRowsToMenuItems(board?.items ?? []), [board])
 
+  const categories = useMemo(() => {
+    const items = kernelItems
+    return [
+      { id: "all", label: "All", items: items.length },
+      { id: "breakfast", label: "Breakfast", items: items.filter((i) => i.category === "breakfast").length },
+      { id: "soups", label: "Soups", items: items.filter((i) => i.category === "soups").length },
+      { id: "pasta", label: "Pasta", items: items.filter((i) => i.category === "pasta").length },
+      { id: "main", label: "Main Course", items: items.filter((i) => i.category === "main").length },
+      { id: "burgers", label: "Burgers", items: items.filter((i) => i.category === "burgers").length },
+      { id: "desserts", label: "Desserts", items: items.filter((i) => i.category === "desserts").length },
+      { id: "drinks", label: "Drinks", items: items.filter((i) => i.category === "drinks").length },
+      { id: "sides", label: "Sides", items: items.filter((i) => i.category === "sides").length },
+    ] as MenuState["categories"]
+  }, [kernelItems])
+
   const state = useMemo(() => ({
     items: kernelItems,
     loading: board === null,
     error: null,
     selectedCategory,
-    categories: useMemo(() => {
-      const items = kernelItems
-      return [
-        { id: "all", label: "All", items: items.length },
-        { id: "breakfast", label: "Breakfast", items: items.filter((i) => i.category === "breakfast").length },
-        { id: "soups", label: "Soups", items: items.filter((i) => i.category === "soups").length },
-        { id: "pasta", label: "Pasta", items: items.filter((i) => i.category === "pasta").length },
-        { id: "main", label: "Main Course", items: items.filter((i) => i.category === "main").length },
-        { id: "burgers", label: "Burgers", items: items.filter((i) => i.category === "burgers").length },
-        { id: "desserts", label: "Desserts", items: items.filter((i) => i.category === "desserts").length },
-        { id: "drinks", label: "Drinks", items: items.filter((i) => i.category === "drinks").length },
-        { id: "sides", label: "Sides", items: items.filter((i) => i.category === "sides").length },
-      ] as MenuState["categories"]
-    }, [kernelItems]),
-  }), [kernelItems, board, selectedCategory])
+    categories,
+  }), [kernelItems, board, selectedCategory, categories])
 
   const fetchMenu = async () => {
     // No-op: projection refreshes automatically

@@ -17,6 +17,7 @@ export const PROJECTION_CAPABILITIES: Record<string, string> = {
   "platform.orders": "order:view",
   "orders.board": "order:view",
   "sales.board": "order:view",
+  "cash.board": "order:view",
   "staff.board": "staff:view",
   "customers.board": "customer:view",
   "giftcards.board": "giftcard:view",

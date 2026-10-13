@@ -1,19 +1,23 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useMenu } from "@/context/MenuContext"
 import { Card, CardContent } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { MenuItemCard } from "@/components/menu/menu-item-card"
-import { Loader2, Plus, Search } from "lucide-react"
+import { Loader2, Plus, Search, Upload } from "lucide-react"
+import { markMenuStarterDone, parseMenuCsv } from "@/lib/settings"
 import type { MenuCategory } from "@/types"
 
 export default function MenuPage() {
-  const { state, fetchMenu, setSelectedCategory } = useMenu()
+  const { state, fetchMenu, setSelectedCategory, addItem } = useMenu()
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState("")
+  const [importing, setImporting] = useState(false)
+  const [importReport, setImportReport] = useState<string | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     const loadData = async () => {
@@ -31,6 +35,36 @@ export default function MenuPage() {
 
   const handleCategoryChange = (category: MenuCategory) => {
     setSelectedCategory(category)
+  }
+
+  // Day-one import: paste or upload `name, price` lines (paper menu → POS in
+  // minutes). Invalid lines are skipped and reported, never half-imported
+  // silently.
+  const importCsvText = async (text: string) => {
+    const rows = parseMenuCsv(text)
+    if (rows.length === 0) {
+      setImportReport("No valid `name, price` lines found.")
+      return
+    }
+    setImporting(true)
+    let ok = 0
+    let failed = 0
+    for (const [i, row] of rows.entries()) {
+      try {
+        await addItem({
+          id: `import-${Date.now()}-${i}`,
+          title: row.name,
+          price: row.price,
+          category: "main",
+        } as Parameters<typeof addItem>[0])
+        ok += 1
+      } catch {
+        failed += 1
+      }
+    }
+    setImporting(false)
+    markMenuStarterDone()
+    setImportReport(`Imported ${ok} items${failed > 0 ? `, ${failed} failed` : ""}.`)
   }
 
   const filteredItems = state.items.filter((item) => {
@@ -59,10 +93,31 @@ export default function MenuPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-3xl font-bold tracking-tight">Menu Management</h2>
-        <Button>
-          <Plus className="mr-2 h-4 w-4" /> Add Item
-        </Button>
+        <div className="flex gap-2">
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv,.txt"
+            className="hidden"
+            aria-label="Import menu CSV"
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (!f) return
+              void f.text().then((t) => importCsvText(t))
+              e.target.value = ""
+            }}
+          />
+          <Button variant="outline" disabled={importing} onClick={() => fileRef.current?.click()}>
+            <Upload className="mr-2 h-4 w-4" /> {importing ? "Importing…" : "Import CSV"}
+          </Button>
+          <Button>
+            <Plus className="mr-2 h-4 w-4" /> Add Item
+          </Button>
+        </div>
       </div>
+      {importReport && (
+        <p className="text-sm text-muted-foreground" role="status">{importReport} Format: one <code>name, price</code> per line.</p>
+      )}
 
       <div className="flex items-center space-x-2">
         <div className="relative flex-1">

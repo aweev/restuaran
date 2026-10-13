@@ -42,8 +42,8 @@ jobs:
       - name: Kernel smoke
         run: npm run kernel:smoke
 
-      - name: SDK freshness check
-        run: npm run kernel:sdk:check
+      - name: Kernel tests
+        run: npm run test:kernel
 
       - name: Production build
         run: npm run build
@@ -63,8 +63,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # No test runner is configured yet. This step fails the job rather than
-      # swallowing its own failure, so the suite cannot report green while
-      # silently running nothing.
+      # Kernel test suite (aggregates, idempotency, authz, cash drawer, …).
       - name: Run tests
-        run: npm test --if-present
+        run: npm run test:kernel

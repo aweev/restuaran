@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { compare, hash } from "bcrypt"
 import { one, sqlWrite, audit } from "@/lib/db-helpers"
-import { getTokenFromRequest, verifyJWT } from "@/lib/jwt"
+import { getTokenFromRequest, verifyAccessToken } from "@/lib/jwt"
 import { z } from "zod"
 
 const schema = z
@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
     const token = getTokenFromRequest(req)
     if (!token) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-    const payload = await verifyJWT(token)
+    const payload = await verifyAccessToken(token)
     if (!payload) return NextResponse.json({ error: "Invalid or expired token" }, { status: 401 })
 
     const v = schema.parse(await req.json())

@@ -14,7 +14,7 @@ import {
 } from "@tanstack/react-table"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { ChevronDown, ChevronUp, Edit, Trash } from "lucide-react"
+import { ChevronDown, ChevronUp, Edit, Trash, Trash2 } from "lucide-react"
 import { useInventory } from "@/context/InventoryContext"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { EditIngredientForm } from "@/components/inventory/edit-ingredient-form"
@@ -26,7 +26,7 @@ interface InventoryTableProps {
 export function InventoryTable({ ingredients }: InventoryTableProps) {
   const [sorting, setSorting] = useState<SortingState>([])
   const [selectedIngredient, setSelectedIngredient] = useState<Ingredient | null>(null)
-  const { deleteIngredient } = useInventory()
+  const { deleteIngredient, recordWastage } = useInventory()
 
   const columns: ColumnDef<Ingredient>[] = [
     {
@@ -161,6 +161,23 @@ export function InventoryTable({ ingredients }: InventoryTableProps) {
                 {selectedIngredient && <EditIngredientForm ingredient={selectedIngredient} />}
               </DialogContent>
             </Dialog>
+            <Button
+              variant="ghost"
+              size="icon"
+              title="Record waste"
+              aria-label={`Record waste for ${row.original.name}`}
+              onClick={() => {
+                const qty = window.prompt(`Waste quantity (${row.original.unit}) for "${row.original.name}":`)
+                if (qty === null) return
+                const reason = window.prompt("Waste reason (required, e.g. spoiled, dropped, over-prep):")
+                if (reason === null || !reason.trim()) return
+                void recordWastage(row.original.id, Number(qty), reason.trim()).catch((e) => {
+                  window.alert(e instanceof Error ? e.message : "Waste rejected")
+                })
+              }}
+            >
+              <Trash2 className="h-4 w-4 text-amber-600" />
+            </Button>
             <Button
               variant="ghost"
               size="icon"

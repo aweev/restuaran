@@ -14,6 +14,9 @@
    =========================================================================== */
 
 @theme {
+  /* System stack: the venue network cannot reach Google Fonts, so Inter (and
+     next/font entirely) is out. Inter-like system fallbacks, no download. */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   /* --- Neutrals ---------------------------------------------------------- */
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));

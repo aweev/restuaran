@@ -14,6 +14,7 @@ import type {
   PermissionName,
 } from "@/types/auth"
 import { hasPermission } from "@/lib/auth"
+import { setSessionPresent } from "@/kernel/react/kernel-provider"
 
 const REFRESH_THRESHOLD_MS = 5 * 60 * 1000
 
@@ -179,6 +180,7 @@ const authReducer = (state: AuthState, action: AuthAction): AuthState => {
 interface AuthContextType {
   state: AuthState
   login: (credentials: LoginCredentials) => Promise<void>
+  loginWithPin: (credentials: { email: string; pin: string }) => Promise<void>
   logout: () => Promise<void>
   register: (userData: RegisterUserData) => Promise<void>
   updateUser: (userData: UpdateUserData) => Promise<void>
@@ -310,6 +312,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [state.accessToken, scheduleTokenRefresh])
 
+  // Tell the kernel transport about the session (it cannot read the HttpOnly
+  // cookie itself). While logged out it stops polling boards and flushing the
+  // offline queue, so public pages no longer 401-flood the server.
+  useEffect(() => {
+    setSessionPresent(state.isAuthenticated && !!state.user)
+  }, [state.isAuthenticated, state.user])
+
   // Actions
   const login = async (credentials: LoginCredentials) => {
     dispatch({ type: "AUTH_START" })
@@ -334,16 +343,47 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         payload: { user: data.user, accessToken: data.accessToken },
       })
 
-      // Redirect based on role
-      if (data.user.role === "kitchen") {
-        router.push("/dashboard/kitchen/display")
-      } else {
-        router.push("/dashboard")
-      }
+      // Redirect based on role (lib/personas roleLanding: cooks → KDS wall,
+      // cashiers → drawer, servers → floor).
+      const { roleLanding } = await import("@/lib/personas")
+      router.push(roleLanding(data.user.role))
     } catch (error) {
       dispatch({
         type: "LOGIN_FAILURE",
         payload: error instanceof Error ? error.message : "An error occurred during login",
+      })
+    }
+  }
+
+  const loginWithPin = async (credentials: { email: string; pin: string }) => {
+    dispatch({ type: "AUTH_START" })
+    try {
+      const response = await fetch("/api/auth/pin-login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify(credentials),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || "PIN login failed")
+      }
+
+      dispatch({
+        type: "LOGIN_SUCCESS",
+        payload: { user: data.user, accessToken: data.accessToken },
+      })
+
+      const { roleLanding } = await import("@/lib/personas")
+      router.push(roleLanding(data.user.role))
+    } catch (error) {
+      dispatch({
+        type: "LOGIN_FAILURE",
+        payload: error instanceof Error ? error.message : "An error occurred during PIN login",
       })
     }
   }
@@ -402,7 +442,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         payload: { user: data.user, accessToken: data.accessToken },
       })
 
-      router.push("/dashboard/setup")
+      router.push("/dashboard")
     } catch (error) {
       dispatch({
         type: "REGISTER_FAILURE",
@@ -605,6 +645,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       value={{
         state,
         login,
+        loginWithPin,
         logout,
         register,
         updateUser,

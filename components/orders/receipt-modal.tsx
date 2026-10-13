@@ -1,8 +1,9 @@
 "use client"
 
-import { useRef } from "react"
+import { useRef, useState } from "react"
 import { Printer, Receipt as ReceiptIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { printHtml, retryPrintJob } from "@/lib/print"
 import {
   Dialog,
   DialogContent,
@@ -20,6 +21,7 @@ interface ReceiptModalProps {
 
 export function ReceiptModal({ order, open, onOpenChange }: ReceiptModalProps) {
   const receiptRef = useRef<HTMLDivElement>(null)
+  const [failedJob, setFailedJob] = useState<string | null>(null)
 
   if (!order) return null
 
@@ -27,48 +29,10 @@ export function ReceiptModal({ order, open, onOpenChange }: ReceiptModalProps) {
     const printContent = receiptRef.current
     if (!printContent) return
 
-    const windowUrl = "about:blank"
-    const uniqueName = new Date().getTime()
-    const windowName = "Print" + uniqueName
-    const printWindow = window.open(windowUrl, windowName, "width=400,height=600")
-
-    if (printWindow) {
-      printWindow.document.write(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>Receipt - Order #${order.id.slice(0, 8)}</title>
-            <style>
-              body {
-                font-family: 'Courier New', Courier, monospace;
-                width: 80mm;
-                margin: 0 auto;
-                padding: 10px;
-                font-size: 12px;
-                color: #000;
-              }
-              .text-center { text-align: center; }
-              .text-right { text-align: right; }
-              .font-bold { font-weight: bold; }
-              .border-b { border-bottom: 1px dashed #000; padding-bottom: 8px; margin-bottom: 8px; }
-              .border-t { border-top: 1px dashed #000; padding-top: 8px; margin-top: 8px; }
-              .flex { display: flex; justify-content: space-between; }
-              .item-row { margin-bottom: 4px; }
-            </style>
-          </head>
-          <body>
-            ${printContent.innerHTML}
-            <script>
-              window.onload = function() {
-                window.print();
-                window.close();
-              }
-            </script>
-          </body>
-        </html>
-      `)
-      printWindow.document.close()
-    }
+    // Single print path (lib/print.ts): queued job + retry on blocked popup.
+    void printHtml(`Receipt - Order #${order.id.slice(0, 8)}`, printContent.innerHTML).then(({ ok, jobId }) => {
+      setFailedJob(ok ? null : jobId)
+    })
   }
 
   return (
@@ -175,9 +139,23 @@ export function ReceiptModal({ order, open, onOpenChange }: ReceiptModalProps) {
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Close
           </Button>
-          <Button onClick={handlePrint} className="gap-2">
-            <Printer className="h-4 w-4" /> Print Receipt
-          </Button>
+          {failedJob ? (
+            <Button
+              variant="destructive"
+              onClick={() => {
+                void retryPrintJob(failedJob).then((ok) => {
+                  if (ok) setFailedJob(null)
+                })
+              }}
+              className="gap-2"
+            >
+              <Printer className="h-4 w-4" /> Print blocked — retry
+            </Button>
+          ) : (
+            <Button onClick={handlePrint} className="gap-2">
+              <Printer className="h-4 w-4" /> Print Receipt
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

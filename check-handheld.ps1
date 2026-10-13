@@ -1,4 +1,4 @@
-$r = Invoke-WebRequest -Uri http://localhost:3100/handheld -UseBasicParsing
+$r = Invoke-WebRequest -Uri http://localhost:3000/handheld -UseBasicParsing
 $r.StatusCode
 $r.Content.Length
 $r.Headers["permissions-policy"]

@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { z } from "zod"
-import { getTokenFromRequest, verifyJWT } from "@/lib/jwt"
+import { getTokenFromRequest, verifyAccessToken } from "@/lib/jwt"
 import { actorFromAuthPayload } from "@/kernel/tenant/permission-map"
 import { getKernel, isSocketEnabled } from "@/kernel/server/kernel-singleton"
 import { assertProjectionAccess } from "@/kernel/projections/projection-acl"
@@ -55,7 +55,8 @@ const commandSchema = z.object({
 async function authenticate(req: NextRequest) {
   const token = getTokenFromRequest(req)
   if (!token) return null
-  const payload = await verifyJWT(token)
+  // Access tokens only: refresh tokens must never authorize commands.
+  const payload = await verifyAccessToken(token)
   if (!payload) return null
   return { actor: actorFromAuthPayload(payload as never), token }
 }

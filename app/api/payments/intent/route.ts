@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { z } from "zod"
 import { randomUUID } from "crypto"
-import { getTokenFromRequest, verifyJWT } from "@/lib/jwt"
+import { getTokenFromRequest, verifyAccessToken } from "@/lib/jwt"
 import { actorFromAuthPayload } from "@/kernel/tenant/permission-map"
 import { getKernel } from "@/kernel/server/kernel-singleton"
 
@@ -26,7 +26,9 @@ export async function POST(req: NextRequest) {
   if (!token) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   let payload: { sub: string; role?: string; permissions?: string[] }
   try {
-    payload = (await verifyJWT(token)) as never
+    const verified = await verifyAccessToken(token)
+    if (!verified) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    payload = verified as never
   } catch {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }

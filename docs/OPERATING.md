@@ -104,3 +104,27 @@
    kernel command to use instead.
 4. Decommission: drop the mutable tables columns after one full retention window
    with zero 410 hits.
+
+## Backup & restore (nightly, 5 minutes to set up)
+
+The till is the event store in Postgres. Lose it and you lose every ticket,
+payment and drawer session ever recorded.
+
+1. **Nightly dump** (cron on the DB host or a GitHub Action):
+   `pg_dump "$DATABASE_URL" -Fc -f "ros-$(date +%F).dump"`, keep 14 copies.
+2. **Verify**: `pg_restore --list` the newest dump weekly; alert on failure.
+3. **Restore**: new database → `pg_restore -d "$DATABASE_URL"` → redeploy
+   (the kernel rebuilds every projection from events on boot; checkpoints
+   resume from `projection_checkpoints`).
+4. **Retention**: event rows are the audit trail — never `DELETE` them to save
+   space; use compaction (`ROS_COMPACTION_INTERVAL_MS`) instead.
+
+## Field updates & versioning
+
+- Set `NEXT_PUBLIC_APP_VERSION` at build time (e.g. `v2026.10.07`). The login
+  screen shows the build so a manager can confirm every tablet matches.
+- Tablets run the PWA: after deploy, each device picks it up on next launch;
+  the service worker purges auth-cache entries on version change
+  (`CLEAR_AUTH_CACHE` in `public/sw.js`).
+- Stuck mid-service? The login screen shows the venue's support contact
+  (Settings → Store profile). No contact set → it says to ask a manager.

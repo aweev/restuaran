@@ -8,6 +8,7 @@ import { ProjectionRegistry } from "@/kernel/projections/projection"
 import { kitchenQueueProjection, tableBoardProjection, inventoryBoardProjection } from "@/kernel/projections/builtins"
 import { orderBoardProjection } from "@/kernel/projections/orders-board"
 import { salesBoardProjection } from "@/kernel/projections/sales-board"
+import { cashBoardProjection } from "@/kernel/projections/cash-board"
 import { staffBoardProjection } from "@/kernel/projections/staff-board"
 import { customersModule } from "@/kernel/modules/customers.module"
 import {
@@ -20,6 +21,7 @@ import { reservationsModule } from "@/kernel/modules/reservations.module"
 import { inventoryModule } from "@/kernel/modules/inventory.module"
 import { IdempotencyStore } from "@/kernel/commands/command-bus"
 import { paymentsModule } from "@/kernel/modules/payments.module"
+import { cashModule } from "@/kernel/modules/cash.module"
 import { giftCardsModule } from "@/kernel/modules/gift-cards.module"
 import { promotionsModule } from "@/kernel/modules/promotions.module"
 import { waitlistModule } from "@/kernel/modules/waitlist.module"
@@ -61,6 +63,9 @@ export const inventoryModules = () => [inventoryModule()]
 
 /** Payments domain module (PaymentIntent aggregate + providers + board). */
 export const paymentsModules = () => [paymentsModule()]
+
+/** Cash-drawer sessions (server-computed expected/variance). */
+export const cashModules = () => [cashModule()]
 
 export interface SocketConfig {
   /** Full external config; takes precedence over url/secret env defaults. */
@@ -113,6 +118,8 @@ export interface BootKernelOptions {
   withInventoryModules?: boolean
   /** Payments module (defaults to installed). */
   withPaymentsModules?: boolean
+  /** Cash-drawer module (defaults to installed). */
+  withCashModules?: boolean
   /** Integration fabric options (transports, retry, autoProcess). */
   integrations?: IntegrationsModuleOptions
   /** Background compaction scheduler: intervalMs > 0 starts the job. */
@@ -149,6 +156,9 @@ export async function bootKernel(kernel: Kernel, opts: BootKernelOptions = {}): 
   if (opts.withPaymentsModules !== false) {
     for (const m of paymentsModules()) await kernel.installModule(m)
   }
+  if (opts.withCashModules !== false) {
+    for (const m of cashModules()) await kernel.installModule(m)
+  }
   // Payment provider from env (manual | simulated-stripe | stripe-terminal).
   try {
     const { selectPaymentProviderFromEnv } = await import("@/kernel/modules/payments.module")
@@ -173,6 +183,44 @@ export async function bootKernel(kernel: Kernel, opts: BootKernelOptions = {}): 
     })
   }
 
+  // Money audit trail: every financial event lands in AuditLog with its actor,
+  // so voids/discounts/comps/payments/splits/cash moves are traceable even
+  // though the kernel event store is the primary ledger. Best-effort by
+  // design — an audit write must never fail the sale itself.
+  kernel.hooks.on("event:published", async ({ event }: { event: unknown }) => {
+    try {
+      const e = event as {
+        eventType?: string
+        aggregateType?: string
+        aggregateId?: string
+        payload?: Record<string, unknown>
+        actor?: { userId?: string }
+        occurredAt?: string
+      }
+      const moneyEvents = new Set([
+        "order.paymentRecorded", "order.closed", "order.voided", "order.lineVoided",
+        "order.lineComped", "order.comped", "order.discountApplied", "order.taxApplied",
+        "order.tipAdded", "order.splitCreated",
+        "cash.opened", "cash.saleNoted", "cash.payout", "cash.closed",
+        "payment.refunded",
+      ])
+      if (!e.eventType || !moneyEvents.has(e.eventType)) return
+      const { sql } = await import("@/lib/db")
+      await sql.unsafe(
+        `INSERT INTO "AuditLog" (id, "userId", action, entity, "entityId", details, timestamp)
+         VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5::jsonb, NOW())`,
+        [
+          e.actor?.userId ?? null,
+          e.eventType,
+          e.aggregateType ?? "ORDER",
+          e.aggregateId ?? null,
+          JSON.stringify({ ...(e.payload ?? {}), occurredAt: e.occurredAt ?? null }),
+        ],
+      ).catch(() => null)
+    } catch {
+      /* audit is advisory */
+    }
+  })
   // Inventory → menu auto-86: when stock hits zero, 86 the linked menu item
   // (convention: inventory itemId === menuItemId). Best-effort; never fails the write.
 
@@ -297,6 +345,7 @@ function buildDefaultProjections(store: KernelConfig["store"], tenant: TenantCon
   // back to ad-hoc SQL over mutable tables.
   registry.register(orderBoardProjection(store, tenant))
   registry.register(salesBoardProjection(store, tenant))
+  registry.register(cashBoardProjection(store, tenant))
   registry.register(staffBoardProjection(store, tenant))
   return registry
 }
@@ -417,10 +466,6 @@ export type { PlatformOrderState } from "@/kernel/aggregates/platform-order.aggr
 // ---- Phase 3: event compaction ----
 export { EventCompactor } from "@/kernel/event-store/compaction"
 export type { CompactionOptions, CompactionReport, CompactableEventStore } from "@/kernel/event-store/compaction"
-
-// ---- Phase 3: public API surface + generated SDK ----
-export { collectSurface, buildSdkSource } from "@/kernel/public-api/generate-sdk"
-export type { KernelSurface } from "@/kernel/public-api/generate-sdk"
 
 // ---- Kernel P0: money, observability, inventory, payments ----
 export { toCents, fromCents, round2, addCents, mulCents, percentCents } from "@/kernel/money"

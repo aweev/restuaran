@@ -112,6 +112,34 @@ export function newRequestId(): string {
 }
 
 /**
+ * Whether the app holds an authenticated session. Set by AuthContext
+ * (the transport layer cannot read the HttpOnly cookie itself).
+ *
+ * While logged out the provider neither polls projections nor flushes the
+ * offline queue: polling would 401-flood the server, and flushing would
+ * destroy queued work — a 401 is not a domain rejection, so dropped commands
+ * would vanish with a bogus "rejected" record.
+ */
+let sessionPresent = false
+
+export function setSessionPresent(present: boolean): void {
+  sessionPresent = present
+}
+
+export function isSessionPresent(): boolean {
+  return sessionPresent
+}
+
+/** Narrow unknown fetch bodies to the kernel result envelope. */
+function isCommandResult(value: unknown): value is CommandResult {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    typeof (value as { success?: unknown }).success === "boolean"
+  )
+}
+
+/**
  * Persist a replay rejection where the Needs-Attention drawer reads it.
  * The kernel transport cannot import the Attention React context (wrong
  * layer), so it writes the same `pos.attention` shape directly and emits
@@ -322,6 +350,9 @@ export function KernelProvider({ children }: { children: React.ReactNode }) {
       let active = true
       let lastPosition = -1
       const tick = async () => {
+        // No session → no polling. Every board would 401, and a logged-out
+        // landing page has no business hammering the kernel.
+        if (!isSessionPresent()) return
         try {
           const envelope = await readProjection<T>(name)
           if (!active) return
@@ -353,11 +384,15 @@ export function KernelProvider({ children }: { children: React.ReactNode }) {
     const flush = async () => {
       if (flushing.current || queue.length === 0) return
       if (typeof navigator !== "undefined" && !navigator.onLine) return
+      // Never flush logged out: the server would 401, and a non-envelope
+      // must not be mistaken for a domain rejection that drops the command.
+      if (!isSessionPresent()) return
       flushing.current = true
       try {
         for (const cmd of queue) {
           try {
             const res = await postCommand(cmd)
+            if (!isCommandResult(res)) return // transport garbage; keep queued
             // A rejection from the server (bad state, forbidden) must not block
             // every later command, so it is dropped rather than retried forever —
             // but it is recorded in Needs Attention so staff see what didn't land.
@@ -414,8 +449,10 @@ export function KernelProvider({ children }: { children: React.ReactNode }) {
       retryQueued: async (requestId: string) => {
         const cmd = queue.find((c) => c.requestId === requestId)
         if (!cmd) return null
+        if (!isSessionPresent()) return null
         try {
           const res = await postCommand(cmd)
+          if (!isCommandResult(res)) return null // keep queued; try again later
           // Server answered (even a rejection is final): drop it, but record
           // rejections so a manual retry that fails stays visible.
           if (!res.success) recordReplayRejection(cmd, res.error)
@@ -461,6 +498,7 @@ export function useCommand() {
       commandType: string,
       payload: AttributeBag,
       opts?: {
+        requestId?: string
         onOptimistic?: () => void
         onRollback?: () => void
         onSuccess?: (r: CommandResult) => void
@@ -471,7 +509,7 @@ export function useCommand() {
       opts?.onOptimistic?.()
       setPending(true)
       try {
-        const result = await execute(commandType, payload)
+        const result = await execute(commandType, payload, opts?.requestId)
         if (result.success) {
           if ("queued" in result && result.queued) {
             opts?.onQueued?.(result)
@@ -495,8 +533,9 @@ export function useCommand() {
           })
           
           if (shouldRetry === "retry") {
-            // Retry the command once
-            const retryResult = await execute(commandType, payload)
+            // Retry the command once — preserve the caller's requestId so a
+            // retry never creates a duplicate.
+            const retryResult = await execute(commandType, payload, opts?.requestId)
             if (retryResult.success) opts?.onSuccess?.(retryResult)
             else opts?.onRollback?.()
             return retryResult

@@ -40,7 +40,7 @@ interface TableContextType {
 const TableContext = createContext<TableContextType | undefined>(undefined)
 
 export const TableProvider = ({ children }: { children: ReactNode }) => {
-  const { state: board } = useProjection<TableBoardState>("tables.board", 1500)
+  const { state: board } = useProjection<TableBoardState>("tables.board", 4000)
   const { run } = useCommand()
   const { notify } = useFeedback()
   const attention = useAttentionOptional()

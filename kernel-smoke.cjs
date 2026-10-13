@@ -20,8 +20,6 @@ const {
   CURRENT_SCHEMA_VERSION,
   OutboundQueue,
   EventCompactor,
-  collectSurface,
-  buildSdkSource,
   verifyWebhookSignature,
   TIMESTAMP_HEADER,
   SIGNATURE_HEADER,
@@ -743,22 +741,22 @@ const assert = (cond, msg) => {
   await kernel.projections.rebuildAll()
   assert(kernel.projections.get("inventory.board").state !== undefined, "projections still rebuild after compaction")
 
-  console.log("\n[17] public API surface + generated SDK")
-  const apiSurface = collectSurface(kernel)
-  // Floors, not exact counts: each domain-completion pass adds queries and
-  // projections, and a hard-coded ceiling would fail the suite every time the
-  // kernel legitimately grows while never catching a regression that *removes*
-  // surface area.
-  assert(apiSurface.commands.length >= 60, `surface: ${apiSurface.commands.length} commands`)
-  assert(apiSurface.queries.length >= 20, `surface: >=20 queries (${apiSurface.queries.length})`)
-  assert(apiSurface.projections.length >= 12, `surface: >=12 projections (${apiSurface.projections.length})`)
-  assert(apiSurface.modules.length >= 7, `surface: >=7 modules (${apiSurface.modules.length})`)
-  const sdkSource = buildSdkSource(apiSurface)
-  assert(sdkSource.includes('"platform.ingestOrder"') && sdkSource.includes("platformIngestOrder("), "SDK generates a typed method per command")
-  assert(sdkSource.includes("webhookSubscribe(") && sdkSource.includes("outboundReplay("), "SDK covers the integration surface")
-  const sdkPath = path.join(__dirname, "sdk", "ros-sdk.ts")
-  const committedSdk = fs.existsSync(sdkPath) ? fs.readFileSync(sdkPath, "utf8") : ""
-  assert(committedSdk === sdkSource, "committed sdk/ros-sdk.ts matches regeneration (npm run kernel:sdk)")
+  console.log("\n[17] kernel surface floors (no public SDK: /api/v1 removed)")
+  // Floors, not exact counts: each domain pass adds commands/queries and a
+  // hard-coded ceiling would fail the suite every time the kernel legitimately
+  // grows while never catching a regression that *removes* surface area.
+  // (The generated /api/v1 SDK client was deleted with the public API; the
+  // committed-file assertion is gone with it.)
+  const commandNames = kernel.commands.registeredCommands()
+  const queryNames = kernel.queries.registeredQueries()
+  const projectionNames = kernel.projections.names()
+  const moduleList = kernel.modules.list()
+  assert(commandNames.length >= 60, `surface: ${commandNames.length} commands`)
+  assert(queryNames.length >= 20, `surface: >=20 queries (${queryNames.length})`)
+  assert(commandNames.includes("cash.open") && commandNames.includes("cash.close"), "surface: cash commands present")
+  assert(projectionNames.length >= 12, `surface: >=12 projections (${projectionNames.length})`)
+  assert(projectionNames.includes("cash.board"), "surface: cash.board present")
+  assert(moduleList.length >= 7, `surface: >=7 modules (${moduleList.length})`)
 
 
   await kernel.shutdown()
