@@ -1,5 +1,0 @@
-
-> pos@0.1.0 kernel:sdk
-> tsc -p tsconfig.kernel.json && node kernel-sdk.cjs
-
-wrote C:\Users\VENTIZ\apps\restau-pos\pos\sdk\ros-sdk.ts (26794 bytes)
